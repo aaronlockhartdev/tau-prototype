@@ -181,7 +181,7 @@
     border: 1px solid transparent;
   }
   .tab:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--hover);
     color: var(--tx);
   }
   /* The active tab merges into the pane below it: panel fill plus the two
@@ -239,7 +239,7 @@
   }
   .focus:hover {
     color: var(--tx);
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--hover);
   }
   .focus.on {
     color: var(--acc);
@@ -266,7 +266,7 @@
   }
   .bell:hover {
     color: var(--tx);
-    background: rgba(255, 255, 255, 0.07);
+    background: var(--hover);
   }
   .bell.on {
     color: var(--red);

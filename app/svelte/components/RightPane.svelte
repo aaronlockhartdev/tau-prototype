@@ -320,7 +320,7 @@
     cursor: pointer;
   }
   .lrow:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
   }
   .lrow .lh {
     display: flex;
@@ -418,7 +418,7 @@
     border: 1px solid transparent;
   }
   .srow2:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
   }
   .srow2.sel {
     background: var(--raised);

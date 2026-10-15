@@ -17,6 +17,7 @@
   --amber: #d9a03f;
   --red: #f0553f;
   --purple: #9d8ae6;
+  --hover: color-mix(in srgb, var(--tx) 6%, transparent);
   /* Code + diff semantics, shared by the transcript tool output
      (ToolOutput) and the file viewer (ChangesView) so both draw from one
      language; derived from the palette above so a token change propagates. */

@@ -95,7 +95,7 @@
     border-radius: 5px;
   }
   .x:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--hover);
     color: var(--tx);
   }
   .list {
@@ -118,7 +118,7 @@
     cursor: pointer;
   }
   .row:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
   }
   .dot {
     grid-row: 1;
