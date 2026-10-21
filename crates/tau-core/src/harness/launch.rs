@@ -535,13 +535,7 @@ pub(super) fn wire_events(
         let u_ws = ws.clone();
         let u_sid = sid.clone();
         agent.set_entry_upsert_hook(Some(Arc::new(move |entry: &Entry| {
-            tracing::warn!(
-                sid = %u_sid,
-                kind = %entry.kind,
-                eid = %entry.id,
-                ts = entry.timestamp,
-                "[measure] upsert wire-only"
-            );
+            eprintln!("[measure] upsert wire-only sid={} kind={} eid={} ts={}", u_sid, entry.kind, entry.id, entry.timestamp);
             let _ = u_tx.try_send(Event::EntryUpsert {
                 workspace: u_ws.clone(),
                 session: u_sid.clone(),
@@ -549,13 +543,7 @@ pub(super) fn wire_events(
             });
         })));
         agent.set_entry_event_hook(Some(Arc::new(move |entry: &Entry| {
-            tracing::warn!(
-                sid = %ws,
-                kind = %entry.kind,
-                eid = %entry.id,
-                ts = entry.timestamp,
-                "[measure] upsert event(persisted)"
-            );
+            eprintln!("[measure] upsert event(persisted) sid={} kind={} eid={} ts={}", ws, entry.kind, entry.id, entry.timestamp);
             let _ = tx.try_send(Event::EntryUpsert {
                 workspace: ws.clone(),
                 session: sid.clone(),

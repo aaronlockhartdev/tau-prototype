@@ -251,7 +251,7 @@ pub(super) async fn session_prompt(server: &Server, rpc: &Rpc) {
             .await
             .unwrap_or(Outcome::Error("turn ended without a settle signal".into()));
         let dropped_total = drops_core.pipe_dropped();
-        tracing::warn!(sid = %session_id, dropped = dropped_total, "[measure] episode settled: total pipe drops");
+        eprintln!("[measure] episode settled sid={} dropped={}", session_id, dropped_total);
         let message = match outcome {
             Outcome::EndTurn => transport::result(&id, &json!({ "stopReason": "end_turn" })),
             Outcome::Cancelled => transport::result(&id, &json!({ "stopReason": "cancelled" })),
