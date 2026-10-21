@@ -248,7 +248,8 @@ pub(super) async fn session_prompt(server: &Server, rpc: &Rpc) {
     tokio::spawn(async move {
         let outcome = rx
             .await
-            .unwrap_or(Outcome::Error("turn ended without a settle signal".into()));
+        let dropped_total = waiter.core.pipe_dropped();
+        tracing::warn!(sid = %session_id, dropped = dropped_total, "[measure] episode settled: total pipe drops");
         let message = match outcome {
             Outcome::EndTurn => transport::result(&id, &json!({ "stopReason": "end_turn" })),
             Outcome::Cancelled => transport::result(&id, &json!({ "stopReason": "cancelled" })),

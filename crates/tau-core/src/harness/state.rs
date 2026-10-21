@@ -413,6 +413,13 @@ pub(crate) fn pipe_send(
     }
 }
 impl Core {
+    /// Total events dropped at the pipe's boundary so far (measurement
+    /// seam for the #266 drop-rate study; the drop counter's public
+    /// reader).
+    pub fn pipe_dropped(&self) -> u64 {
+        self.pipe.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn events(&self) -> mpsc::Receiver<Event> {
         self.events_rx
             .lock()
