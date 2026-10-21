@@ -186,6 +186,7 @@ pub(super) async fn session_prompt(server: &Server, rpc: &Rpc) {
     };
 
     let core = server.ensure_core().await;
+    let drops_core = core.clone();
 
     // The turn lock and settle registration land before the send: a turn
     // that finished before the registration would otherwise orphan the
@@ -248,7 +249,8 @@ pub(super) async fn session_prompt(server: &Server, rpc: &Rpc) {
     tokio::spawn(async move {
         let outcome = rx
             .await
-        let dropped_total = waiter.core.pipe_dropped();
+            .unwrap_or(Outcome::Error("turn ended without a settle signal".into()));
+        let dropped_total = drops_core.pipe_dropped();
         tracing::warn!(sid = %session_id, dropped = dropped_total, "[measure] episode settled: total pipe drops");
         let message = match outcome {
             Outcome::EndTurn => transport::result(&id, &json!({ "stopReason": "end_turn" })),

@@ -561,7 +561,6 @@ pub(super) fn wire_events(
                 session: sid.clone(),
                 entry: entry_to_view(entry),
             });
-            });
         })));
     }
 }
