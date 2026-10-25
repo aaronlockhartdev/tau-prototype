@@ -31,15 +31,20 @@ proptest! {
         prop_assert_eq!(line_hashes(&base).unwrap(), line_hashes(&padded).unwrap());
     }
 
-    /// Survivor reuse: an edit of one line leaves every other line's
-    /// anchor in place (a single-line replacement shifts nothing).
+    /// Survivor reuse: an edit of one line leaves every other line's anchor
+    /// in place (a single-line replacement shifts nothing). Distinct lines
+    /// only: where lines repeat, several maximal pairings differ by which copy
+    /// carries which anchor and `align` picks among them, so position identity
+    /// is not the claim there (`repeated_checksums_pair_with_distinct_slots`
+    /// covers the duplicate case at the pairing level).
     #[test]
     fn survivors_keep_their_anchor_across_an_edit(
-        (lines, at) in (prop::collection::vec("abcd", 5..15), 0usize..15),
+        (count, at) in (5usize..15, 0usize..15),
     ) {
         let replacement = String::from("wxyz");
+        let at = at.min(count - 1);
+        let lines: Vec<String> = (0..count).map(|i| format!("line {i}")).collect();
         let content = lines.join("\n");
-        let at = at.min(lines.len() - 1);
         let hashes = line_hashes(&content).unwrap();
         let edit = Edit {
             from: hashes[at].clone(),
@@ -122,4 +127,164 @@ proptest! {
             assert!(seen.insert(h.clone()), "duplicate anchor {h}");
         }
     }
+
+    /// #298's optimality claim, on generated inputs: the pairing the primitive
+    /// hands out carries exactly as many survivors as the longest common
+    /// subsequence — no fewer (it is maximal), no more (it is a common
+    /// subsequence). Checked against two oracles built differently from each
+    /// other and from the DP `align` runs, so a wrong pairing cannot validate
+    /// itself.
+    #[test]
+    fn the_alignment_pairs_a_maximal_common_subsequence(
+        (prev, next) in (
+            prop::collection::vec("[a-c]{1,3}", 0..9),
+            prop::collection::vec("[a-c]{1,3}", 0..9),
+        ),
+    ) {
+        let prev: Vec<String> = prev.iter().map(|l| line_checksum(l)).collect();
+        let next: Vec<String> = next.iter().map(|l| line_checksum(l)).collect();
+        let paired = alignment::align(&prev, &next);
+
+        let mut pairs = 0;
+        let mut prev_idx: Option<usize> = None;
+        for (j, p) in paired.iter().enumerate() {
+            let Some(i) = p else { continue };
+            pairs += 1;
+            assert_eq!(prev[*i], next[j], "pair {j}<->{i} is not a checksum match");
+            if let Some(pi) = prev_idx {
+                assert!(*i > pi, "pairs are out of previous-file order at {j}");
+            }
+            prev_idx = Some(*i);
+        }
+        let by_selections = lcs_len_by_selection(&prev, &next);
+        let by_subsets = alignment::brute_force_lcs(&prev, &next);
+        assert_eq!(
+            by_selections, by_subsets,
+            "the two oracles disagree on {prev:?} -> {next:?}"
+        );
+        assert_eq!(
+            pairs,
+            by_selections,
+            "{prev:?} -> {next:?}: the pairing is not maximal"
+        );
+    }
+
+    /// The churn bar on the pure edit path: a one-line replacement re-labels
+    /// only the line it changed — every other line keeps the anchor it had.
+    #[test]
+    fn a_line_replacement_relabels_only_the_line_it_changed(
+        (count, at, replacement) in (2usize..30, 0usize..30, "[x-z]{1,4}"),
+    ) {
+        let at = at % count;
+        let lines: Vec<String> = (0..count).map(|i| format!("line {i}")).collect();
+        let content = lines.join("\n");
+        let before = line_hashes(&content).unwrap();
+        let edited = apply_edit(
+            &content,
+            &Edit {
+                from: before[at].clone(),
+                to: before[at].clone(),
+                content: replacement.clone(),
+            },
+        )
+        .unwrap();
+        let relabelled = edited
+            .hashes
+            .iter()
+            .zip(before.iter())
+            .filter(|(new, old)| new != old)
+            .count();
+        assert_eq!(
+            relabelled,
+            usize::from(replacement != lines[at]),
+            "a one-line edit re-labelled {relabelled} lines"
+        );
+    }
+
+    /// The same bar on the registry's re-read path (read → edit → read): an
+    /// unchanged line keeps its anchor, so the model is never shown a fresh
+    /// label for content it was already shown.
+    #[test]
+    fn a_registry_reread_relabels_no_survivor(
+        (count, at, replacement) in (2usize..30, 0usize..30, "[x-z]{1,4}"),
+    ) {
+        let at = at % count;
+        let lines: Vec<String> = (0..count).map(|i| format!("line {i}")).collect();
+        let content = lines.join("\n");
+        let mut reg = registry::Registry::new();
+        let (before, _) = reg.allocate("f", &content).expect("allocate");
+        let mut edited_lines = lines.clone();
+        edited_lines[at] = replacement;
+        let (after, _) = reg
+            .allocate("f", &edited_lines.join("\n"))
+            .expect("allocate");
+        for (i, (old, new)) in before.iter().zip(after.iter()).enumerate() {
+            if i == at {
+                continue;
+            }
+            assert_eq!(old, new, "line {i} lost its anchor on re-read");
+        }
+    }
+}
+
+/// #298's maximality claim on the shapes that broke the greedy walk, spelled
+/// out: an insertion, a deletion, a mid-file replacement, a transposition, a
+/// reorder, repeated checksums, and the empty / disjoint sides where nothing
+/// may pair.
+#[test]
+fn the_shapes_the_greedy_walk_got_wrong_pair_maximally() {
+    let cases: &[(&[&str], &[&str])] = &[
+        (&["a", "b", "c"], &["a", "b", "c"]),
+        (&["a", "b", "c"], &["x", "a", "b", "y", "c"]),
+        (&["a", "b", "c", "d"], &["a", "c", "d"]),
+        (&["a", "b", "c", "d"], &["a", "B", "c", "d"]),
+        (&["a", "b", "c", "d"], &["d", "c", "b", "a"]),
+        (&["a", "b", "c", "d"], &["b", "a", "c", "d"]),
+        (&["x", "y", "x"], &["y", "x"]),
+        (&["a", "b", "a", "c"], &["b", "a", "a", "c"]),
+        (&["a", "a", "a"], &["a", "a"]),
+        (&["a", "a"], &["a", "a", "a"]),
+        (&["a", "b"], &["c", "d"]),
+        (&[], &["a", "b"]),
+        (&["a", "b"], &[]),
+        (&[], &[]),
+    ];
+    for (prev, next) in cases {
+        let prev: Vec<String> = prev.iter().map(|l| line_checksum(l)).collect();
+        let next: Vec<String> = next.iter().map(|l| line_checksum(l)).collect();
+        let carried = alignment::align(&prev, &next)
+            .iter()
+            .filter(|p| p.is_some())
+            .count();
+        assert_eq!(
+            carried,
+            lcs_len_by_selection(&prev, &next),
+            "{prev:?} -> {next:?}: the pairing is not maximal"
+        );
+    }
+}
+
+/// The LCS length over the previous side's slots: for every selection of
+/// `prev` positions, walk the selection through `next` in order and keep the
+/// longest one that lands entirely. An in-order pairing pairs a subset of
+/// `prev` with an identical subset of `next`, so the longest landable
+/// selection is attainable and never longer than the true LCS — and this never
+/// runs the DP `align` runs, so a wrong DP cannot validate itself (#298).
+fn lcs_len_by_selection(prev: &[String], next: &[String]) -> usize {
+    (0..(1usize << prev.len()))
+        .filter(|mask| {
+            let mut cursor = 0usize;
+            (0..prev.len()).filter(|k| mask & (1 << k) != 0).all(|k| {
+                match next[cursor..].iter().position(|n| *n == prev[k]) {
+                    Some(off) => {
+                        cursor += off + 1;
+                        true
+                    }
+                    None => false,
+                }
+            })
+        })
+        .map(|mask| (0..prev.len()).filter(|k| mask & (1 << k) != 0).count())
+        .max()
+        .unwrap_or(0)
 }

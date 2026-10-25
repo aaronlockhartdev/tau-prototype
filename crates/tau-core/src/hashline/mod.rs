@@ -13,11 +13,15 @@
 //! [`plan_edits`] / [`apply_edits`] core stays registry-free (property tests,
 //! and a no-registry caller).
 
+mod alignment;
 mod diagnostics;
 pub mod encoding;
 pub mod line_endings;
 pub mod pin_store;
 pub mod registry;
+
+#[cfg(test)]
+mod properties;
 
 #[cfg(test)]
 mod tests;
@@ -600,19 +604,18 @@ fn strip_anchored_content(
     )])
 }
 
-/// Re-derive anchors after an edit, LCS over per-line checksums (item 6):
-/// a new line whose checksum matches an old line's, in order, keeps the old
-/// anchor — unchanged lines in the replacement keep their exact anchors,
-/// and moves/deletions are detected by checksum, not by canon +
-/// nearest-position heuristics.
-fn lcs_reanchor(
+/// Re-derive anchors after an edit: the lines [`alignment::align`] pairs with
+/// the previous file keep that line's anchor (#298), every other line is
+/// allocated fresh. Moves and deletions are detected by checksum, not by
+/// canon + nearest-position heuristics.
+fn reanchor(
     old_lines: &[String],
     old_hashes: &[String],
     new_lines: &[String],
 ) -> Result<Vec<String>, TooManyLines> {
     // The caller's anchor set (the registry snapshot) can be shorter than the
-    // file when lines were appended out-of-band since the last app write;
-    // the walk must cover no more lines than there are anchors to re-use, or
+    // file when lines were appended out-of-band since the last app write; the
+    // pairing must cover no more lines than there are anchors to re-use, or
     // `old_hashes[i]` below runs off the end.
     let old_sums: Vec<String> = old_lines
         .iter()
@@ -620,21 +623,7 @@ fn lcs_reanchor(
         .map(|l| line_checksum(l))
         .collect();
     let new_sums: Vec<String> = new_lines.iter().map(|l| line_checksum(l)).collect();
-
-    // In-order checksum matching (the LCS walk): for each new line, find the
-    // next old line (after the match cursor) with the same checksum.
-    let mut cursor = 0usize;
-    let mut matched: Vec<Option<usize>> = vec![None; new_lines.len()];
-    for (j, s) in new_sums.iter().enumerate() {
-        while cursor < old_sums.len() && old_sums[cursor] != *s {
-            cursor += 1;
-        }
-        if cursor < old_sums.len() && old_sums[cursor] == *s {
-            matched[j] = Some(cursor);
-            cursor += 1;
-        }
-    }
-
+    let paired = alignment::align(&old_sums, &new_sums);
     let mut used = vec![false; HASH_SPACE];
     for h in old_hashes {
         if let Some(idx) = hash_to_idx(h) {
@@ -642,7 +631,7 @@ fn lcs_reanchor(
         }
     }
     let mut new_hashes: Vec<Option<String>> = vec![None; new_lines.len()];
-    for (j, m) in matched.iter().enumerate() {
+    for (j, m) in paired.iter().enumerate() {
         if let Some(i) = *m {
             new_hashes[j] = Some(old_hashes[i].clone());
         }
@@ -902,7 +891,7 @@ pub fn plan_edits(
         return Err(EditError::EmptyFile);
     }
 
-    let new_hashes = lcs_reanchor(&lines, &hashes, &new_lines).map_err(|_| EditError::TooLarge)?;
+    let new_hashes = reanchor(&lines, &hashes, &new_lines).map_err(|_| EditError::TooLarge)?;
     // Per-line endings of the new file: apply every range to the original
     // endings in document order (each application shifts the later spans).
     let file_endings = vec![file_ending; lines.len()];

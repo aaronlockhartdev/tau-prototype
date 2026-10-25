@@ -450,15 +450,15 @@ pub fn file_checksum(checksums: &[String]) -> String {
 /// Re-anchor a new file's lines against a previous pin set: a line whose
 /// checksum matches a previous pin **in order** pairs with that pin (the
 /// content-addressed, position-independent identity); every other line is
-/// fresh. Returns the in-order LCS pairing — the previous pin index for each
-/// new line, `None` where the line is fresh. The pairing (not a
-/// per-checksum lookup) is what keeps repeated lines unique: two new copies
+/// fresh. Returns the pairing [`crate::hashline::alignment`] computes — the
+/// previous pin index for each new line, `None` where the line is fresh — the
+/// same primitive the edit path and the registry use (#298). The pairing (not
+/// a per-checksum lookup) is what keeps repeated lines unique: two new copies
 /// of one old line pair with two *distinct* previous pins.
 #[must_use]
 pub fn reanchor(prev: &FilePins, checksums: &[String]) -> Vec<Option<usize>> {
-    use crate::hashline::registry::match_anchors;
     let prev_sums = prev.checksums();
-    match_anchors(&prev_sums, checksums)
+    crate::hashline::alignment::align(&prev_sums, checksums)
 }
 
 /// Build the next `FilePins` from a previous set and the re-anchor pairing:

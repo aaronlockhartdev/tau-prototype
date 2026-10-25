@@ -105,14 +105,20 @@ fn survivor_anchors_stay_put_across_an_edit() {
     };
     let edited = apply_edit(content, &edit).unwrap();
     assert_eq!(edited.content, "alpha\nBETA\ngamma\ndelta\n");
-    // The unchanged prefix (before the edit point) keeps its anchor; the
-    // edited line and the lines after it are re-allocated fresh (the LCS
-    // reanchor matches in order from the top, so a mid-file edit starts a new
-    // anchor sequence).
-    assert_eq!(edited.hashes[0], before[0]);
-    assert_ne!(edited.hashes[1], before[1]);
-    assert_ne!(edited.hashes[2], before[2]);
-    assert_ne!(edited.hashes[3], before[3]);
+    // The maximal pairing carries every unchanged line: the prefix and the
+    // lines after the edit point keep their anchors, and only the edited line
+    // is allocated fresh (#298 — the greedy walk used to re-mint everything
+    // after the edit point).
+    assert_eq!(edited.hashes[0], before[0], "the prefix keeps its anchor");
+    assert_ne!(edited.hashes[1], before[1], "the edited line is fresh");
+    assert_eq!(
+        edited.hashes[2], before[2],
+        "the line after it keeps its anchor"
+    );
+    assert_eq!(
+        edited.hashes[3], before[3],
+        "the line after it keeps its anchor"
+    );
 }
 
 #[test]
@@ -532,8 +538,8 @@ fn identical_file_reports_no_change() {
 // lcs_reanchor matched the duplicate's checksum to old index 299 and indexed
 // old_hashes[299] (len 299), panicking with
 // "index out of bounds: the len is 299 but the index is 299". Planning must
-// now tolerate the short registry: the edit applies, the duplicate keeps its
-// anchor, and the new line gets a fresh one.
+// now tolerate the short registry: the edit applies and the anchor set stays
+// unique.
 #[test]
 fn plan_edits_registry_shorter_than_file_does_not_panic() {
     // 300-line file: the 299-line registry snapshot plus a duplicate of its
@@ -556,14 +562,20 @@ fn plan_edits_registry_shorter_than_file_does_not_panic() {
             to: last.clone(),
             content: "changed".into(),
         }],
-        &PlanOptions::default(),
+        &PlanOptions {
+            path: "a.txt".into(),
+            // The desync itself: 299 served anchors for a 300-line file.
+            hashes: Some(hashes.clone()),
+            ..PlanOptions::default()
+        },
     )
     .expect("planning against a registry shorter than the file succeeds");
     assert_eq!(planned.lines.len(), 300);
     assert_eq!(planned.hashes.len(), 300);
     assert_eq!(planned.lines[298], "changed");
-    // The pre-existing anchors are never duplicated: the anchor set stays
-    // unique across the 300 lines, and the new line gets a fresh allocation.
+    // The pre-existing anchors are never duplicated: the set stays unique
+    // across the 300 lines, and only the edited line is allocated away from
+    // the served set — a fresh draw can never reuse a held slot.
     assert_eq!(
         planned.hashes.len(),
         planned
@@ -572,7 +584,13 @@ fn plan_edits_registry_shorter_than_file_does_not_panic() {
             .collect::<std::collections::HashSet<_>>()
             .len()
     );
-    assert_ne!(planned.hashes[299], last);
+    assert_ne!(planned.hashes[298], last, "the edited line is fresh");
+    // #298: the out-of-band duplicate carries an anchor the file already
+    // holds for its checksum instead of being minted again, so 299 of the 300
+    // lines carry. The greedy walk stopped at the edit point and re-minted the
+    // tail, carrying 298.
+    let carried = planned.hashes.iter().filter(|h| hashes.contains(h)).count();
+    assert_eq!(carried, 299, "every unchanged line carries an anchor");
 }
 
 // The benign twin: the file grew out-of-band with a duplicate of the last
@@ -768,4 +786,86 @@ fn ownership_gates_render_their_e_codes() {
         msg.contains("\"AAAA\", \"BBBB\" are owned by other.rs"),
         "{msg}"
     );
+}
+
+// #298: the edit path's re-anchor and the registry's re-read are the same job
+// (decide which lines keep their anchor), so they must agree. At main
+// (bb4d9d9) the edit path walked a greedy cursor while the registry ran the DP
+// longest matching; over 200,000 random checksum pairs in the shape the
+// alignment proptests draw, the walk came out the shorter pairing about a
+// quarter of the time — a survivor the registry kept, the edit path
+// re-labelled, churn the model then treats as owned.
+#[test]
+fn a_survivor_keeps_its_anchor_across_a_reordering() {
+    // Swapping the first two lines: the maximal in-order pairing covers
+    // beta/gamma/delta; the greedy walk stopped after beta and re-minted the
+    // rest.
+    let content = "alpha\nbeta\ngamma\ndelta\n";
+    let before = line_hashes(content).unwrap();
+    let edit = Edit {
+        from: before[0].clone(),
+        to: before[1].clone(),
+        content: "beta\nalpha".into(),
+    };
+    let edited = apply_edit(content, &edit).expect("the range is valid");
+    assert_eq!(edited.content, "beta\nalpha\ngamma\ndelta\n");
+    // Two maximal pairings of length 3 exist (carry beta, or carry alpha); the
+    // tie is the walk's to choose. What it must not do is carry fewer.
+    let old: HashMap<&str, String> = ["alpha", "beta", "gamma", "delta"]
+        .iter()
+        .zip(before.iter())
+        .map(|(l, h)| (*l, h.clone()))
+        .collect();
+    let carried = edited
+        .hashes
+        .iter()
+        .filter(|h| old.values().any(|o| o == *h))
+        .count();
+    assert_eq!(carried, 3, "three of the four lines carry their anchor");
+    assert_eq!(edited.hashes[2], before[2], "gamma survives");
+    assert_eq!(edited.hashes[3], before[3], "delta survives");
+    // No anchor aliases a different line: an anchor carried from the old set
+    // still points at the checksum it was minted for.
+    for (anchor, line) in edited
+        .hashes
+        .iter()
+        .zip(["beta", "alpha", "gamma", "delta"])
+    {
+        if old.values().any(|o| o == anchor) {
+            let minted_for = old
+                .iter()
+                .find(|(_, h)| *h == anchor)
+                .map(|(l, _)| *l)
+                .expect("a carried anchor has a line");
+            assert_eq!(
+                line_checksum(minted_for),
+                line_checksum(line),
+                "{anchor} now points at a different line"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_mid_file_edit_leaves_no_survivor_relabelled() {
+    // The churn case: one line changed in the middle of a 20-line file. The
+    // greedy walk re-minted every line after the edit point (19 of 20); the
+    // maximal pairing mints only the changed line.
+    let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+    let content = lines.join("\n");
+    let before = line_hashes(&content).unwrap();
+    let edit = Edit {
+        from: before[5].clone(),
+        to: before[5].clone(),
+        content: "CHANGED".into(),
+    };
+    let edited = apply_edit(&content, &edit).expect("the range is valid");
+    let relabelled = edited
+        .hashes
+        .iter()
+        .zip(before.iter())
+        .filter(|(new, old)| new != old)
+        .count();
+    assert_eq!(relabelled, 1, "only the changed line loses its anchor");
+    assert_ne!(edited.hashes[5], before[5], "the changed line is fresh");
 }
