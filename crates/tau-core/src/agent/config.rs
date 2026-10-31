@@ -91,6 +91,25 @@ impl AgentSession {
         }
     }
 
+    /// The config a boundary read that succeeded: the latch clears, so the next
+    /// broken edit is a new story (#357).
+    pub(crate) fn config_accepted(&self) {
+        self.inner.lock().config_rejection = None;
+    }
+
+    /// A config read that failed, by its reason. True the first time a reason
+    /// arrives — the caller's signal to record it. The boundary runs every turn
+    /// and a broken file does not fix itself, so one record names one story
+    /// (#357).
+    pub(crate) fn config_rejection_changed(&self, reason: &str) -> bool {
+        let mut inner = self.inner.lock();
+        let fresh = inner.config_rejection.as_deref() != Some(reason);
+        if fresh {
+            inner.config_rejection = Some(reason.to_owned());
+        }
+        fresh
+    }
+
     /// The session's current turn options (spec §12, #35): what the next
     /// turn's calls run with. The config-reload boundary reads it to decide
     /// whether a re-derivation would change the gate (#337).
