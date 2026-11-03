@@ -112,6 +112,8 @@ mod tests_om_route;
 #[cfg(test)]
 mod tests_plan;
 #[cfg(test)]
+mod tests_pump;
+#[cfg(test)]
 mod tests_queue;
 #[cfg(test)]
 mod tests_skills;
