@@ -22,6 +22,10 @@ pub use progress::ToolProgress;
 /// text is the common shape; `read` can also return an image block a
 /// vision-capable endpoint can see (#34).
 pub use tau_protocol::payload::ToolOutput;
+/// The tool's verdict on the wire (`ToolPayload.status`): the dispatcher records
+/// the same type `ToolResult::status()` returns, so no string bridge sits between
+/// the verdict and the entry.
+pub use tau_protocol::payload::ToolStatus;
 
 /// A tool's result: the model-facing output plus an explicit ok/error verdict
 /// set by the tool itself (which knows whether it succeeded) — the source of
@@ -88,18 +92,17 @@ impl ToolResult {
         }
     }
 
-    /// The wire status string for `ToolPayload.status`.
+    /// The verdict this result reports, for `ToolPayload.status`.
     #[must_use]
-    pub fn status(&self) -> &'static str {
+    pub const fn status(&self) -> tau_protocol::payload::ToolStatus {
         if self.cancelled {
-            "cancelled"
+            tau_protocol::payload::ToolStatus::Cancelled
         } else if self.ok {
-            "ok"
+            tau_protocol::payload::ToolStatus::Ok
         } else {
-            "error"
+            tau_protocol::payload::ToolStatus::Error
         }
     }
-
     /// A typed verdict from a `Result<String, String>` source: `Ok` maps to a
     /// success, `Err` to a failure — a surface tool's `Result` becomes a
     /// `ToolResult` without the dispatcher re-reading the text.

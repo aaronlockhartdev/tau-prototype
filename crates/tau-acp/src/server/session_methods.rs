@@ -110,7 +110,6 @@ pub(super) async fn session_new(server: &Server, rpc: &Rpc) {
             in_flight: false,
             pending: None,
             saw_stream_end: false,
-            saw_interrupted: false,
             cancel_requested: false,
             yolo,
             context_window,
@@ -240,7 +239,6 @@ pub(super) async fn session_prompt(server: &Server, rpc: &Rpc) {
             begin_headless_run(state, &text);
         }
         state.saw_stream_end = false;
-        state.saw_interrupted = false;
         state.cancel_requested = false;
         state.pending = Some(tx);
     }

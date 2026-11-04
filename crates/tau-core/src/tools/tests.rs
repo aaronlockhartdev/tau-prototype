@@ -136,18 +136,18 @@ async fn core_tools_carry_a_typed_verdict() {
     let cwd = dir.path();
     // bash: the exit code is the verdict.
     let ok = bash(cwd, &json!({"command": "true"})).await;
-    assert_eq!(ok.status(), "ok");
+    assert_eq!(ok.status(), ToolStatus::Ok);
     let err = bash(cwd, &json!({"command": "false"})).await;
-    assert_eq!(err.status(), "error");
+    assert_eq!(err.status(), ToolStatus::Error);
     // read: a missing file is an error; a present one is ok.
     let err = read(cwd, &json!({"path": "missing.txt"}), None, None, None);
-    assert_eq!(err.status(), "error");
+    assert_eq!(err.status(), ToolStatus::Error);
     std::fs::write(cwd.join("a.txt"), "hi\n").unwrap();
     let ok = read(cwd, &json!({"path": "a.txt"}), None, None, None);
-    assert_eq!(ok.status(), "ok");
+    assert_eq!(ok.status(), ToolStatus::Ok);
     // write: a clean write is ok.
     let ok = write(cwd, &json!({"path": "b.txt", "content": "x"}), None).await;
-    assert_eq!(ok.status(), "ok");
+    assert_eq!(ok.status(), ToolStatus::Ok);
 }
 
 #[tokio::test]
@@ -191,13 +191,13 @@ async fn write_ack_carries_byte_and_line_counts() {
 async fn write_missing_args_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let err = write(dir.path(), &json!({"content": "x"}), None).await;
-    assert_eq!(err.status(), "error");
+    assert_eq!(err.status(), ToolStatus::Error);
     assert!(
         text(err).contains("missing \"path\""),
         "wrong failure: expected missing path"
     );
     let err = write(dir.path(), &json!({"path": "x.txt"}), None).await;
-    assert_eq!(err.status(), "error");
+    assert_eq!(err.status(), ToolStatus::Error);
     assert!(
         text(err).contains("missing \"content\""),
         "wrong failure: expected missing content"

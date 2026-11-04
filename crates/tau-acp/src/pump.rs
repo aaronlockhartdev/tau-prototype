@@ -14,6 +14,7 @@ use crate::sessions::{self, Outcome, Registry};
 use crate::transport::{self, Out};
 use serde_json::{Value, json};
 use tau_core::harness::Core;
+use tau_protocol::payload::EntryPayload;
 use tau_protocol::snapshot::ViewEntry;
 use tau_protocol::{Command, EntryKind, Event, MessageLane, SystemEventKind};
 
@@ -101,12 +102,7 @@ fn handle(ctx: &PumpCtx, event: &Event) {
         // The streaming delta (#303): the chunk is already cut, so the pump
         // forwards it and never sees the accumulation.
         Event::StreamDelta { .. } => forward_delta(ctx, event),
-        Event::StreamEnd {
-            session,
-            interrupted,
-            usage,
-            ..
-        } => {
+        Event::StreamEnd { session, usage, .. } => {
             let usage_update = {
                 let mut guard = registry.lock();
                 guard.get_mut(session).and_then(|s| {
@@ -115,9 +111,6 @@ fn handle(ctx: &PumpCtx, event: &Event) {
                     // empty Queue is the settle signal).
                     s.mapper.on_stream_end();
                     s.saw_stream_end = true;
-                    if *interrupted {
-                        s.saw_interrupted = true;
-                    }
                     // N5: per-call usage rides the finalize, only when the
                     // session's model declares a context window — the
                     // schema's `size` is required and must not be guessed.
@@ -240,7 +233,6 @@ fn settle_headless(ctx: &PumpCtx, session: &str, outcome: Outcome) {
                 let cancelled = guard.get(session).is_some_and(|s| s.cancel_requested);
                 if let Some(s) = guard.get_mut(session) {
                     s.saw_stream_end = false;
-                    s.saw_interrupted = false;
                     s.cancel_requested = false;
                     s.last_assistant = None;
                 }
@@ -281,11 +273,13 @@ fn track_last_assistant(
         return;
     };
     let text = entry
-        .payload_value()
-        .get("text")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("")
-        .to_owned();
+        .payload
+        .as_deref()
+        .and_then(|payload| match payload {
+            EntryPayload::Assistant(p) => Some(p.text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
     s.last_assistant = Some(text);
 }
 
@@ -301,7 +295,6 @@ mod tests {
             in_flight: true,
             pending: None,
             saw_stream_end: true,
-            saw_interrupted: false,
             cancel_requested: false,
             yolo: false,
             context_window: None,

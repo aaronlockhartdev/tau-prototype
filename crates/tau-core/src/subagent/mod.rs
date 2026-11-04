@@ -78,8 +78,10 @@ pub struct Supervisor {
     /// Self-reference for the re-adopt: it builds a child's `AgentSession`
     /// with the child link, which needs an `Arc<Supervisor>`. `Weak` (the
     /// supervisor is owned by the parent session; a strong self would be a
-    /// cycle, ticket #43). Set in `new` (it always returns an `Arc`).
-    self_weak: Mutex<Option<Weak<Self>>>,
+    /// cycle, ticket #43). `Arc::new_cyclic` fills it as the `Arc` is made, so
+    /// it is live for as long as `&self` is borrowable — no `Option`, and no
+    /// lock to read it out of.
+    self_weak: Weak<Self>,
     /// The parent's in-memory entries (issue #280): lets the fleet view and
     /// the handle-count seed avoid re-reading the parent's file from disk.
     parent_entries: Option<Vec<crate::session::Entry>>,
@@ -166,7 +168,7 @@ pub struct Spawned {
 impl Supervisor {
     #[must_use]
     pub fn new(p: SupervisorParams) -> Arc<Self> {
-        let sup = Arc::new(Self {
+        Arc::new_cyclic(|sup| Self {
             parent_session: p.parent_session.clone(),
             parent: Mutex::new(None),
             children: Mutex::new(HashMap::new()),
@@ -197,10 +199,8 @@ impl Supervisor {
             driver: p.driver,
             core: p.core,
             parent_entries: p.parent_entries,
-            self_weak: Mutex::new(None),
-        });
-        *sup.self_weak.lock() = Some(Arc::downgrade(&sup));
-        sup
+            self_weak: sup.clone(),
+        })
     }
 
     /// How many child handles this parent has minted across all its

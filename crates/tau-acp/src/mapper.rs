@@ -1,5 +1,5 @@
 //! The event → ACP `session/update` mapping (research doc §3.4):
-//! snapshot-diffed text/thought chunks and two-phase tool calls. The only
+//! snapshot-diffed text/thought chunks and the tool call's phase. The only
 //! stateful piece is the per-entry last-sent length; provider calls are
 //! strictly sequential per session, so in-flight assistant entries are a
 //! FIFO and `StreamEnd` finalizes the oldest.
@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::{Value, json};
 use tau_protocol::EntryKind;
+use tau_protocol::payload::{EntryPayload, ToolOutput, ToolStatus};
 use tau_protocol::snapshot::ViewEntry;
 
 const TITLE_CAP: usize = 80;
@@ -25,10 +26,11 @@ pub struct Mapper {
     /// Entries `on_stream_end` has finalized; a re-upsert of one of these
     /// (the journal-resync case) resumes it at the front of the queue.
     finalized: HashSet<String>,
-    tool_created: HashSet<String>,
-    /// Tool ids whose result `tool_call_update` was already owed: a
-    /// repeated snapshot of a finished call owes nothing.
-    tool_result_sent: HashSet<String>,
+    /// The phase the client's card for a tool call last heard, per id. The
+    /// core's tool lane is full-state-per-frame, so the same phase re-arrives
+    /// (a repeated snapshot, a coalesced streaming frame, the post-turn
+    /// re-emit) and owes nothing then; a phase *change* always rides out.
+    tool_phase: HashMap<String, &'static str>,
 }
 
 impl Mapper {
@@ -50,6 +52,7 @@ impl Mapper {
             | EntryKind::Other(_) => Vec::new(),
         }
     }
+
     /// The updates one streaming delta owes the client (#303): the producer
     /// already cut the text to the new characters, so this emits one chunk per
     /// non-empty field, with no diffing of the accumulation. It advances the
@@ -108,14 +111,18 @@ impl Mapper {
     }
 
     fn on_user(entry: &ViewEntry) -> Vec<Value> {
-        let payload = entry.payload_value();
-        let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
-        if text.is_empty() {
+        // The typed arm carries the text (#346). `None` is the sidecar case
+        // (ADR-0005): the bytes live behind the `blob` pointer and the client
+        // has no chunk to see.
+        let Some(EntryPayload::User(payload)) = entry.payload.as_deref() else {
+            return Vec::new();
+        };
+        if payload.text.is_empty() {
             return Vec::new();
         }
         vec![json!({
             "sessionUpdate": "user_message_chunk",
-            "content": { "type": "text", "text": text },
+            "content": { "type": "text", "text": payload.text },
         })]
     }
 
@@ -132,14 +139,23 @@ impl Mapper {
     }
 
     fn on_assistant(&mut self, entry: &ViewEntry) -> Vec<Value> {
-        let mut out = Vec::new();
-        let payload = entry.payload_value();
+        let Some(EntryPayload::Assistant(payload)) = entry.payload.as_deref() else {
+            return Vec::new();
+        };
         self.track_assistant(&entry.id);
-        for (sent, field, variant) in [
-            (&mut self.text_sent, "text", "agent_message_chunk"),
-            (&mut self.reasoning_sent, "reasoning", "agent_thought_chunk"),
+        let mut out = Vec::new();
+        for (sent, text, variant) in [
+            (
+                &mut self.text_sent,
+                payload.text.as_str(),
+                "agent_message_chunk",
+            ),
+            (
+                &mut self.reasoning_sent,
+                payload.reasoning.as_str(),
+                "agent_thought_chunk",
+            ),
         ] {
-            let text = payload.get(field).and_then(Value::as_str).unwrap_or("");
             let sent_chars = sent.get(&entry.id).copied().unwrap_or(0);
             let chars = text.chars().count();
             if chars > sent_chars {
@@ -157,42 +173,53 @@ impl Mapper {
         out
     }
 
+    /// The tool call's updates. The core's tool lane is full-state per frame —
+    /// the call phase, the coalesced streaming snapshots (`ToolProgress`), the
+    /// terminal record — and `ToolPayload::status` names which phase a frame
+    /// is. The client's card follows the phase: the create at first sight, then
+    /// one update per phase change, so a streaming tool's terminal record — its
+    /// full output — always reaches the client.
     fn on_tool(&mut self, entry: &ViewEntry) -> Vec<Value> {
-        let payload = entry.payload_value();
-        let name = payload.get("name").and_then(Value::as_str).unwrap_or("");
-        let args = payload.get("args").cloned().unwrap_or(Value::Null);
-        let output = payload.get("output");
-        let output_text = output.and_then(Value::as_str);
-        // Image outputs (the `read` tool on a .png) have no text surface in
-        // v0: the create carries the input, the result is rawOutput only.
-        let has_result = output.is_some_and(|o| !o.is_null());
+        let Some(EntryPayload::Tool(payload)) = entry.payload.as_deref() else {
+            return Vec::new();
+        };
+        let (phase, status) = tool_card(payload.status);
         let mut out = Vec::new();
-        if !self.tool_created.contains(&entry.id) {
-            self.tool_created.insert(entry.id.clone());
+        if let Some(&seen) = self.tool_phase.get(&entry.id) {
+            if seen == phase {
+                return out;
+            }
+        } else {
             out.push(json!({
                 "sessionUpdate": "tool_call",
                 "toolCallId": entry.id,
-                "name": name,
-                "title": tool_title(name, &args),
-                "kind": tool_kind(name),
+                "name": payload.name,
+                "title": tool_title(&payload.name, &payload.args),
+                "kind": tool_kind(&payload.name),
                 "status": "in_progress",
-                "rawInput": args,
+                "rawInput": payload.args,
             }));
-        } else if has_result && !self.tool_result_sent.contains(&entry.id) {
-            self.tool_result_sent.insert(entry.id.clone());
-            let mut update = json!({
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": entry.id,
-                "status": "completed",
-                "rawOutput": output.cloned().unwrap_or(Value::Null),
-            });
-            if let Some(text) = output_text {
-                update["content"] = json!([
-                    { "type": "content", "content": { "type": "text", "text": text } }
-                ]);
-            }
-            out.push(update);
         }
+        self.tool_phase.insert(entry.id.clone(), phase);
+        if phase == IN_FLIGHT {
+            return out;
+        }
+        let mut update = json!({
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": entry.id,
+            "rawOutput": payload.output,
+        });
+        if let Some(status) = status {
+            update["status"] = json!(status);
+        }
+        // Image outputs (the `read` tool on a .png) have no text surface in v0:
+        // the result rides `rawOutput` only.
+        if let ToolOutput::Text(text) = &payload.output {
+            update["content"] = json!([
+                { "type": "content", "content": { "type": "text", "text": text } }
+            ]);
+        }
+        out.push(update);
         out
     }
 }
@@ -222,21 +249,72 @@ fn tool_kind(name: &str) -> &'static str {
     }
 }
 
+/// The phase of a frame with no verdict on it: the call-phase record and every
+/// coalesced streaming snapshot (`ToolProgress` writes `status: None`).
+const IN_FLIGHT: &str = "in_flight";
+
+/// A frame's phase and the ACP card status it rides. v1 has no `cancelled`
+/// tool status (`docs/research/acp-protocol.md` §2.9: a cancelled tool is left
+/// unfinalized, the client marking it on `session/cancel`), so a cancelled
+/// result rides its output with no status field — never a false `completed`.
+fn tool_card(status: Option<ToolStatus>) -> (&'static str, Option<&'static str>) {
+    match status {
+        None => (IN_FLIGHT, None),
+        Some(ToolStatus::Ok) => ("completed", Some("completed")),
+        Some(ToolStatus::Error) => ("failed", Some("failed")),
+        Some(ToolStatus::Cancelled) => ("cancelled", None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A stored entry as the wire projects it. An assistant payload is filled
+    /// with the fields the core's writer always writes (`reasoning`,
+    /// `interrupted`, `calls`), so it decodes as the typed arm the mapper
+    /// matches — a payload that does not decode rides `Other`, and the ACP lane
+    /// has no shape to map there.
     fn entry(id: &str, kind: &str, payload: &Value) -> ViewEntry {
         let kind = EntryKind::parse(kind);
+        let stored = match kind {
+            EntryKind::Assistant => {
+                let mut p = payload.clone();
+                let obj = p
+                    .as_object_mut()
+                    .expect("an assistant payload is an object");
+                obj.entry("reasoning".to_owned()).or_insert(json!(""));
+                obj.entry("interrupted".to_owned()).or_insert(json!(false));
+                obj.entry("calls".to_owned()).or_insert(json!([]));
+                p
+            }
+            _ => payload.clone(),
+        };
         ViewEntry {
             id: id.to_owned(),
             parent: None,
             kind: kind.clone(),
             timestamp: 1,
-            payload: tau_protocol::payload::EntryPayload::from_entry(&kind, payload).map(Box::new),
+            payload: tau_protocol::payload::EntryPayload::from_entry(&kind, &stored)
+                .map(Box::new),
             blob: None,
             first_kept: None,
         }
+    }
+
+    /// A tool payload at the phase its writer records: `status` is a verdict
+    /// name, or absent for the call phase and the streaming snapshots.
+    fn tool(id: &str, name: &str, args: Value, output: &str, status: Option<&str>) -> ViewEntry {
+        let mut payload = json!({
+            "call_id": "c1",
+            "name": name,
+            "args": args,
+            "output": output,
+        });
+        if let Some(status) = status {
+            payload["status"] = json!(status);
+        }
+        entry(id, "tool", &payload)
     }
 
     /// #303: the producer cut the delta, so the mapper forwards it — no diff
@@ -397,13 +475,12 @@ mod tests {
     #[test]
     fn tool_call_is_two_phase() {
         let mut m = Mapper::default();
-        let start = entry(
+        let start = tool(
             "t1",
-            "tool",
-            &json!({
-                "name": "bash", "call_id": "c1",
-                "args": { "command": "cargo test" }, "output": ""
-            }),
+            "bash",
+            json!({ "command": "cargo test" }),
+            "",
+            None,
         );
         let out = m.on_entry(&start);
         assert_eq!(out.len(), 1);
@@ -412,13 +489,12 @@ mod tests {
         assert_eq!(out[0]["status"], "in_progress");
         assert_eq!(out[0]["rawInput"]["command"], "cargo test");
 
-        let done = entry(
+        let done = tool(
             "t1",
-            "tool",
-            &json!({
-                "name": "bash", "call_id": "c1",
-                "args": { "command": "cargo test" }, "output": "ok"
-            }),
+            "bash",
+            json!({ "command": "cargo test" }),
+            "ok",
+            Some("ok"),
         );
         let out = m.on_entry(&done);
         assert_eq!(out.len(), 1);
@@ -427,8 +503,103 @@ mod tests {
         assert_eq!(out[0]["rawOutput"], "ok");
         assert_eq!(out[0]["content"][0]["content"]["text"], "ok");
 
-        // A repeat of the result owes nothing.
+        // A repeat of the result owes nothing: the same phase twice.
         assert!(m.on_entry(&done).is_empty());
+    }
+
+    /// 4E, the live defect. A streaming tool re-upserts the same id with its
+    /// growing output and no verdict, one frame per display frame
+    /// (`ToolProgress`); the terminal record carries the verdict. The old latch
+    /// latched on the first frame carrying any output and called it `completed`
+    /// — the client got 1 of N chunks and a false verdict.
+    #[test]
+    fn a_streaming_tools_final_result_reaches_the_client() {
+        let mut m = Mapper::default();
+        let args = json!({ "command": "sleep 1; echo hi" });
+        assert_eq!(
+            m.on_entry(&tool("t1", "bash", args.clone(), "", None))
+                .len(),
+            1,
+            "the create"
+        );
+        // The in-flight frames are one phase: the card already reads
+        // in_progress, and the full-state lane owes it nothing.
+        assert!(
+            m.on_entry(&tool("t1", "bash", args.clone(), "chunk-1\n", None))
+                .is_empty(),
+            "a streaming frame re-states the phase"
+        );
+        assert!(
+            m.on_entry(&tool(
+                "t1",
+                "bash",
+                args.clone(),
+                "chunk-1\nchunk-2\n",
+                None
+            ))
+            .is_empty()
+        );
+        // The terminal record is the phase change, and it carries the whole
+        // output.
+        let done = tool(
+            "t1",
+            "bash",
+            args,
+            "chunk-1\nchunk-2\nexit 0",
+            Some("ok"),
+        );
+        let out = m.on_entry(&done);
+        assert_eq!(out.len(), 1, "one update for the terminal phase");
+        assert_eq!(out[0]["sessionUpdate"], "tool_call_update");
+        assert_eq!(out[0]["status"], "completed");
+        assert_eq!(
+            out[0]["rawOutput"], "chunk-1\nchunk-2\nexit 0",
+            "the final result, not the first chunk"
+        );
+        // The post-turn re-emit of the same record owes nothing.
+        assert!(m.on_entry(&done).is_empty());
+    }
+
+    /// 4E: the core's verdict is the client's status. A failed call is
+    /// `failed`, never `completed`; a cancelled one rides its output with no
+    /// status field (v1 §2.9 has no cancelled tool status).
+    #[test]
+    fn a_failing_tool_is_never_reported_completed() {
+        let mut m = Mapper::default();
+        m.on_entry(&tool("t1", "bash", json!({}), "", None));
+        let failed = m.on_entry(&tool("t1", "bash", json!({}), "exit 7", Some("error")));
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0]["status"], "failed");
+        assert_eq!(failed[0]["rawOutput"], "exit 7");
+
+        let cancelled = m.on_entry(&tool(
+            "t1",
+            "bash",
+            json!({}),
+            "bash: cancelled by user stop",
+            Some("cancelled"),
+        ));
+        assert_eq!(
+            cancelled[0].get("status"),
+            None,
+            "v1 names no cancelled status: the output rides, no false verdict"
+        );
+        assert_eq!(cancelled[0]["rawOutput"], "bash: cancelled by user stop");
+    }
+
+    /// Negative (4A): the sidecar case — the payload lives behind the `blob`
+    /// pointer, so the typed slot is `None` and the entry owes nothing.
+    #[test]
+    fn a_sidecar_pointer_with_no_inline_payload_owes_nothing() {
+        let mut m = Mapper::default();
+        let mut blobbed = tool("t1", "bash", json!({}), "the bytes", Some("ok"));
+        blobbed.payload = None;
+        blobbed.blob = Some(tau_protocol::snapshot::BlobRef {
+            id: "t1".into(),
+            size: 12,
+            hash: "0000000000000000".into(),
+        });
+        assert!(m.on_entry(&blobbed).is_empty());
     }
 
     #[test]
@@ -442,11 +613,7 @@ mod tests {
             ("subagent_spawn", "think"),
             ("mystery", "other"),
         ] {
-            let out = m.on_entry(&entry(
-                &format!("t-{name}"),
-                "tool",
-                &json!({ "name": name, "args": {}, "output": "" }),
-            ));
+            let out = m.on_entry(&tool(name, name, json!({}), "", None));
             assert_eq!(out[0]["kind"], kind, "{name}");
         }
     }
@@ -454,10 +621,12 @@ mod tests {
     #[test]
     fn file_tool_title_uses_the_path() {
         let mut m = Mapper::default();
-        let out = m.on_entry(&entry(
+        let out = m.on_entry(&tool(
             "t1",
-            "tool",
-            &json!({ "name": "read", "args": { "path": "/src/main.rs" }, "output": "" }),
+            "read",
+            json!({ "path": "/src/main.rs" }),
+            "",
+            None,
         ));
         assert_eq!(out[0]["title"], "/src/main.rs");
     }
@@ -465,22 +634,23 @@ mod tests {
     #[test]
     fn blob_backed_tool_with_inlined_payload_owes_the_result_update() {
         // #265: once the upsert hook inlines the sidecar blob, the tool's
-        // result phase reaches the mapper with `output` present — the
+        // result phase reaches the mapper with the verdict present — the
         // two-phase update fires, no client-side resolution needed.
         let mut m = Mapper::default();
-        let start = entry(
-            "t1",
-            "tool",
-            &json!({ "name": "bash", "args": { "command": "ls" }, "output": null }),
+        assert_eq!(
+            m.on_entry(&tool("t1", "bash", json!({ "command": "ls" }), "", None))
+                .len(),
+            1
         );
-        assert_eq!(m.on_entry(&start).len(), 1);
 
         // The result upsert arrives with the inlined payload (payload is the
         // decoded JSON, the blob ref is kept).
-        let mut done = entry(
+        let mut done = tool(
             "t1",
-            "tool",
-            &json!({ "name": "bash", "args": { "command": "ls" }, "output": "the bytes" }),
+            "bash",
+            json!({ "command": "ls" }),
+            "the bytes",
+            Some("ok"),
         );
         done.blob = Some(tau_protocol::snapshot::BlobRef {
             id: "t1".into(),

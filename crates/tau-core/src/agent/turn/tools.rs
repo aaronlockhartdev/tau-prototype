@@ -56,7 +56,7 @@ impl AgentSession {
                     "cancelled by user stop".to_owned(),
                 ),
                 ui_detail: None,
-                status: Some("cancelled".to_owned()),
+                status: Some(tau_protocol::payload::ToolStatus::Cancelled),
             }
             .to_value(),
         )
@@ -88,7 +88,7 @@ impl AgentSession {
                                 .into(),
                         ),
                         ui_detail: None,
-                        status: Some("error".to_owned()),
+                        status: Some(tau_protocol::payload::ToolStatus::Error),
                     }
                     .to_value(),
                 )?;
@@ -198,7 +198,7 @@ impl AgentSession {
                     args,
                     output: result.output,
                     ui_detail: result.ui_detail,
-                    status: Some(status.to_owned()),
+                    status: Some(status),
                 }
                 .to_value(),
             )?;

@@ -132,12 +132,9 @@ impl Supervisor {
         // A re-adopt adds one handle: the hard cap bounds it (the soft
         // bound is not a hard limit, so it does not gate re-adopt).
         self.check_fleet_cap().ok()?;
-        // The child's link needs an `Arc<Supervisor>`: upgrade the self
-        // ref (`new` always sets it).
-        let sup = {
-            let guard = self.self_weak.lock().clone();
-            guard.and_then(|w| w.upgrade())?
-        };
+        // The child's link needs an `Arc<Supervisor>`: the self weak is
+        // filled as the `Arc` is made, so it upgrades while `&self` lives.
+        let sup = self.self_weak.upgrade()?;
         let disk = restore::disk_children(&self.cwd, &self.parent_session, None);
         let d: &DiskChild = disk
             .iter()

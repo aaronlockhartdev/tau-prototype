@@ -32,10 +32,9 @@ pub struct SessionState {
     pub pending: Option<oneshot::Sender<Outcome>>,
     /// Settle rule (verified by the protocol tests, `tests/acp_protocol.rs`):
     /// after the first `StreamEnd`, an empty `Queue` settles the turn; a
-    /// session-scoped `System` error settles it immediately. Both flags
-    /// reset when a new prompt registers.
+    /// session-scoped `System` error settles it immediately. The flag resets
+    /// when a new prompt registers.
     pub saw_stream_end: bool,
-    pub saw_interrupted: bool,
     /// A `session/cancel` landed for this turn: the settle then answers the
     /// prompt `cancelled` even if the abort surfaced as a `System` error
     /// (the spec MUSTs the response, N3). Read live at settle time — a

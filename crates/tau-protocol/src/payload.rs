@@ -71,10 +71,28 @@ pub struct AssistantPayload {
     pub calls: Vec<FunctionCall>,
 }
 
+/// The tool call's lifecycle phase as the core's dispatcher records it (spec
+/// §5.4): the verdict is `None` while the call is in flight and names the
+/// outcome on its terminal record. The one encoding of "is this call finished,
+/// and how" — the ACP mapper's result-shape sniff and the GUI's output-prefix
+/// classifier (B5) are both this fact re-derived from the output text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    /// The dispatcher reported success.
+    Ok,
+    /// The dispatcher reported a failure; its output is the error text.
+    Error,
+    /// The call was cut mid-flight by a user stop (#222): the work was
+    /// cancelled, not failed.
+    Cancelled,
+}
+
 /// The tool entry's payload (spec §5.4): one call, its arguments, the result
 /// as the dispatcher returned it, and the core's success/failure verdict — the
-/// source of truth for the GUI's status indicator. Absent while the call is in
-/// flight (the call-phase record carries no output yet).
+/// source of truth for the GUI's status indicator. `status` is `None` while the
+/// call is in flight: the call-phase record and the coalesced streaming
+/// snapshots (`ToolProgress`) report no verdict, and write no `status` key.
 ///
 /// `output` is the model-facing channel (it rides into the assembled context);
 /// `ui_detail` is the GUI-only channel (spec §5.4, ADR-0012): present on the
@@ -93,7 +111,7 @@ pub struct ToolPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_detail: Option<ToolOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
+    pub status: Option<ToolStatus>,
 }
 
 /// A tool result's content (#34): plain text — the common, cheap path —
@@ -474,7 +492,7 @@ mod tests {
             args: json!({"path": "a.txt"}),
             output: ToolOutput::Text("wrote a.txt (7 bytes, 2 lines)".into()),
             ui_detail: Some(ToolOutput::Text("hello\nworld".into())),
-            status: Some("ok".into()),
+            status: Some(ToolStatus::Ok),
         };
         let v = p.to_value();
         assert_eq!(v["ui_detail"], "hello\nworld");

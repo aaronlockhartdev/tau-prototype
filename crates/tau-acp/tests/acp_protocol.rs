@@ -700,7 +700,7 @@ async fn prompt_tool_calls_stream_as_updates() {
     assert_eq!(
         updates_for_call.len(),
         1,
-        "one tool_call_update for the call, got: {updates:?}"
+        "one update per phase change: the streaming frames share the in-flight phase, the terminal record is the change ({updates:?})"
     );
     assert_eq!(
         updates_for_call[0]["params"]["update"]["status"],

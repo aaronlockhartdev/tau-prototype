@@ -453,7 +453,7 @@ pub(crate) fn owner_of<'c>(
 /// handed to `build_live`, so the repaired file is what every later turn
 /// reads.
 fn repair_dangling_tool_calls(store: &mut SessionStore) -> Result<(), ProtocolError> {
-    use tau_protocol::payload::{AssistantPayload, ToolOutput, ToolPayload};
+    use tau_protocol::payload::{AssistantPayload, ToolOutput, ToolPayload, ToolStatus};
 
     let Some(leaf) = store.leaf().map_err(|e| ProtocolError::Other {
         message: e.to_string(),
@@ -500,7 +500,7 @@ fn repair_dangling_tool_calls(store: &mut SessionStore) -> Result<(), ProtocolEr
                         "turn was interrupted before tool execution completed".to_owned(),
                     ),
                     ui_detail: None,
-                    status: Some("error".to_owned()),
+                    status: Some(ToolStatus::Error),
                 }
                 .to_value(),
                 Some(&leaf.id),
