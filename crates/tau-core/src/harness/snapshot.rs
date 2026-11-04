@@ -360,8 +360,7 @@ pub(crate) fn usage_of(value: &Value) -> Option<Usage> {
     Some(Usage {
         input_tokens: u.input_tokens,
         output_tokens: u.output_tokens,
-        total_tokens: u.total_tokens(),
-        cached_prompt_tokens: u.cached_input_tokens.unwrap_or(0),
+        cached_prompt_tokens: u.cached_input_tokens,
     })
 }
 

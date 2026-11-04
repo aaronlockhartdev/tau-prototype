@@ -38,11 +38,15 @@ export interface SkillInfo {
   location: string;
   model_invocation: boolean;
 }
+// A usage at a call's completion. `total_tokens` rides the wire as the Rust
+// side's derived sum, never a stored number; `cached_prompt_tokens` null is
+// the provider not saying, not a reported zero (the `Usage` doc in
+// tau-protocol/src/lib.rs).
 export interface Usage {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
-  cached_prompt_tokens: number;
+  cached_prompt_tokens: number | null;
 }
 
 export interface SessionMeta {

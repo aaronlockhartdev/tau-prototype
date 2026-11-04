@@ -210,8 +210,7 @@ pub(crate) fn info_to_protocol(i: &crate::subagent::SubagentInfo) -> SubagentInf
         usage: i.usage.as_ref().map(|u| Usage {
             input_tokens: u.input_tokens,
             output_tokens: u.output_tokens,
-            total_tokens: u.total_tokens(),
-            cached_prompt_tokens: u.cached_input_tokens.unwrap_or(0),
+            cached_prompt_tokens: u.cached_input_tokens,
         }),
         resume_contract: i.resume_contract.clone(),
     }

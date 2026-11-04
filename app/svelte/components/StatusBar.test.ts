@@ -103,6 +103,23 @@ describe('StatusBar', () => {
     expect(screen.getByText('50% cache')).toBeInTheDocument();
   });
 
+  it('a provider that does not say the cache count renders a dash, not a zero', () => {
+    openSession('s1', {
+      over: {
+        usage: {
+          input_tokens: 1200,
+          output_tokens: 340,
+          cached_prompt_tokens: null,
+          total_tokens: 1540
+        }
+      }
+    });
+    render(StatusBar);
+    expect(screen.getByText('1.2k in')).toBeInTheDocument();
+    expect(screen.getByText('— cache')).toBeInTheDocument();
+    expect(screen.queryByText(/0% cache/)).not.toBeInTheDocument();
+  });
+
   it('a workspace missing from the tab strip falls back to the id', () => {
     openSession('s1');
     render(StatusBar);

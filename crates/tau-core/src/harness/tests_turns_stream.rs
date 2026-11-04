@@ -161,7 +161,7 @@ async fn the_event_pipe_carries_a_canned_turn_to_the_sink() {
         panic!("missing stream end: {events:?}");
     };
     assert!(!interrupted);
-    assert_eq!(usage.map(|u| u.total_tokens), Some(15));
+    assert_eq!(usage.map(Usage::total_tokens), Some(15));
     // The tool call: one id, re-emitted call → result (ADR-0008); the
     // post-turn reconciliation re-sends the file line, so the id appears
     // with an empty output and again with the result's.

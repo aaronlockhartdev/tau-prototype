@@ -533,7 +533,7 @@ async fn a_child_reuses_its_agents_provider_and_emits_its_stream_end() {
                 usage,
                 ..
             } if *session == child => {
-                Some((call_id.clone(), usage.as_ref().map(|u| u.total_tokens)))
+                Some((call_id.clone(), usage.as_ref().map(|u| u.total_tokens())))
             }
             _ => None,
         }) {

@@ -114,7 +114,7 @@ describe('applyDelta (#303)', () => {
       parent: null,
       kind: 'assistant',
       timestamp: 9,
-      payload: payloadFor('assistant', { text: 'first line', interrupted: false, usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 } }),
+      payload: payloadFor('assistant', { text: 'first line', interrupted: false, usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3, cached_prompt_tokens: null } }),
       blob: null,
       first_kept: null
     });

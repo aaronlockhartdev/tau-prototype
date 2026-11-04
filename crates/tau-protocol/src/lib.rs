@@ -468,16 +468,92 @@ pub enum Command {
 /// The spec §8 HITL request/response pair exists in this shape with zero
 /// live request types (ADR-0007: transparency, not enforcement) — a
 /// future security ticket adds concrete types, not a new channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(default)]
-/// Token usage at a call's completion (mirrors the provider's shape, kept
-/// protocol-owned so the crate stays transport-free).
+/// Token usage at a call's completion. The total is derived, never stored — the
+/// rule the sibling `TurnUsage` states (`payload.rs`: recording the sum beside
+/// the parts is the two writers ADR-0034 refuses). `total_tokens` still rides
+/// the wire, computed from the parts at emission: the GUI's mirror and the §8
+/// goldens pin it, and no producer can hand a core a total its parts deny.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(into = "UsageWire")]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub total_tokens: u64,
-    /// Prompt tokens served from the server's prefix cache (0 = no hit data).
-    pub cached_prompt_tokens: u64,
+    /// Prompt tokens served from the server's prefix cache. `None` is the
+    /// provider not saying, which is not the fact of a reported zero
+    /// (`payload.rs`, mirrored from `TurnUsage::cached_input_tokens`).
+    pub cached_prompt_tokens: Option<u64>,
+}
+
+impl<'de> Deserialize<'de> for Usage {
+    /// Every part is required: a usage that omits one is a decode error, not a
+    /// zero-filled guess (the `#[serde(default)]` that used to sit on this
+    /// struct turned a producer's bug into a silent `0`). Presence is read at
+    /// the value level, as `SubagentState::from_value` reads its fields: serde
+    /// folds a key sent null and a key never sent into one `None`.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let part = |name: &'static str| -> Result<u64, D::Error> {
+            value
+                .get(name)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| serde::de::Error::missing_field(name))
+        };
+        // Presence, not value: a key sent null is the provider not saying; a
+        // key never sent is the partial object this decode refuses.
+        let cached_prompt_tokens = match value.get("cached_prompt_tokens") {
+            None => return Err(serde::de::Error::missing_field("cached_prompt_tokens")),
+            Some(Value::Null) => None,
+            Some(count) => Some(count.as_u64().ok_or_else(|| {
+                serde::de::Error::invalid_type(
+                    serde::de::Unexpected::Other("not a token count"),
+                    &"a token count",
+                )
+            })?),
+        };
+        Ok(Self {
+            input_tokens: part("input_tokens")?,
+            output_tokens: part("output_tokens")?,
+            cached_prompt_tokens,
+        })
+    }
+}
+
+/// The wire shape of [`Usage`]: the parts plus their sum, in the order the
+/// goldens pin. A `total_tokens` arriving on a read is not a field, so serde
+/// skips it — the parts are the only input to the sum.
+#[derive(Debug, Default, Serialize)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the field names are the wire contract"
+)]
+struct UsageWire {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cached_prompt_tokens: Option<u64>,
+}
+
+impl From<Usage> for UsageWire {
+    fn from(usage: Usage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens(),
+            cached_prompt_tokens: usage.cached_prompt_tokens,
+        }
+    }
+}
+
+impl Usage {
+    /// Derived, never stored. Saturating: both addends arrive off the network,
+    /// and a total must never wrap below its parts.
+    #[must_use]
+    pub const fn total_tokens(self) -> u64 {
+        self.input_tokens.saturating_add(self.output_tokens)
+    }
 }
 
 /// The child's lifecycle state (the protocol's mirror of the core's

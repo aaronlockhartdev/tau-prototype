@@ -91,18 +91,18 @@ fn usage_of_reads_the_core_shape_and_cached_tokens() {
         Some(Usage {
             input_tokens: 10,
             output_tokens: 5,
-            total_tokens: 15,
-            cached_prompt_tokens: 3,
+            cached_prompt_tokens: Some(3),
         })
     );
 
-    // No details: the cached count is zero, not an error.
+    // No details: the cached count is the provider not saying, not a reported
+    // zero — the distinction `TurnUsage` keeps, carried through to the wire.
     let u = snapshot::usage_of(&json!({
         "input_tokens": 1,
         "output_tokens": 2,
         "total_tokens": 3,
     }));
-    assert_eq!(u.unwrap().cached_prompt_tokens, 0);
+    assert_eq!(u.unwrap().cached_prompt_tokens, None);
 
     // `#[serde(default)]`: any object parses (zeros when the fields are
     // absent); a non-object is not a usage.

@@ -19,7 +19,7 @@
       : '—'
   );
   const cachePct = $derived(
-    s?.usage && s.usage.input_tokens > 0
+    s?.usage && s.usage.input_tokens > 0 && s.usage.cached_prompt_tokens !== null
       ? Math.round((100 * s.usage.cached_prompt_tokens) / s.usage.input_tokens)
       : 0
   );
@@ -50,7 +50,7 @@
       <span class="sep">·</span>
       <span>{fmtK(s.usage.output_tokens)} out</span>
       <span class="sep">·</span>
-      <span>{cachePct}% cache</span>
+      <span>{s.usage.cached_prompt_tokens === null ? '—' : `${cachePct}%`} cache</span>
     {:else}
       <span>0 in</span>
       <span class="sep">·</span>

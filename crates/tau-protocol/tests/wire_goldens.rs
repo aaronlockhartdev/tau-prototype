@@ -131,8 +131,7 @@ mod events {
             usage: Some(Usage {
                 input_tokens: 100,
                 output_tokens: 20,
-                total_tokens: 120,
-                cached_prompt_tokens: 40,
+                cached_prompt_tokens: Some(40),
             }),
             duration_secs: Some(1.5),
         });

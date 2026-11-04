@@ -245,7 +245,7 @@ async fn a_snapshots_usage_is_the_last_assistant_records() {
                 .expect("the assistant record's usage");
             assert_eq!(usage.input_tokens, 7);
             assert_eq!(usage.output_tokens, 3);
-            assert_eq!(usage.total_tokens, 10);
+            assert_eq!(usage.total_tokens(), 10);
         }
         other => panic!("expected a snapshot: {other:?}"),
     }

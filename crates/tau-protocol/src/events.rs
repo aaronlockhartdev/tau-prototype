@@ -266,8 +266,7 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 100,
                     output_tokens: 20,
-                    total_tokens: 120,
-                    cached_prompt_tokens: 0,
+                    cached_prompt_tokens: Some(0),
                 }),
                 duration_secs: None,
             },

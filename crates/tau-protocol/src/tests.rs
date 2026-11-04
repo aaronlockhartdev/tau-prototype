@@ -532,15 +532,63 @@ fn a_wake_states_its_target_or_none() {
 }
 
 #[test]
-fn usage_defaults_when_fields_missing() {
-    let u: Usage = serde_json::from_str(r#"{"input_tokens":5}"#).unwrap();
-    assert_eq!(
-        u,
-        Usage {
-            input_tokens: 5,
-            ..Usage::default()
-        }
+fn usage_is_a_full_object_on_the_wire() {
+    // The parts are required: a partial object is a decode error, not a zero
+    // (`#[serde(default)]` is off, so a producer that omits a part is caught).
+    let partial = serde_json::from_str::<Usage>(r#"{"input_tokens":3,"output_tokens":4}"#);
+    assert!(
+        partial.is_err(),
+        "a usage with no cached-prompt part is not a usage: {partial:?}"
     );
-    let u: Usage = serde_json::from_str("{}").unwrap();
-    assert_eq!(u, Usage::default());
+    // Positive: every part present decodes, and `None` is the provider not
+    // saying — an explicit null, not a reported zero.
+    let u: Usage =
+        serde_json::from_str(r#"{"input_tokens":3,"output_tokens":4,"cached_prompt_tokens":null}"#)
+            .unwrap();
+    assert_eq!(u.cached_prompt_tokens, None);
+    assert_eq!(Usage::default().cached_prompt_tokens, None);
+}
+
+/// The total is the parts' sum, never a stored number: a `Usage` cannot be
+/// built with a total its parts deny, so the pair can never tell different
+/// stories (the rule `TurnUsage` lives by). The wire still carries the sum —
+/// the goldens pin it — emitted from the parts.
+#[test]
+fn usage_total_is_the_parts_sum_not_a_wire_number() {
+    // Positive: the sum, from the parts alone.
+    let u = Usage {
+        input_tokens: 100,
+        output_tokens: 20,
+        cached_prompt_tokens: Some(0),
+    };
+    assert_eq!(u.total_tokens(), 120);
+    // Saturating: both addends arrive off the network, and a total must never
+    // wrap below its parts.
+    assert_eq!(
+        Usage {
+            input_tokens: u64::MAX,
+            output_tokens: 1,
+            cached_prompt_tokens: None,
+        }
+        .total_tokens(),
+        u64::MAX
+    );
+    // Negative: a wire total that disagrees with its parts is read past, not
+    // trusted — the key is not a field, so no producer can hand a core a total
+    // the sum denies.
+    let u: Usage = serde_json::from_str(
+        r#"{"input_tokens":7,"output_tokens":3,"total_tokens":999,"cached_prompt_tokens":null}"#,
+    )
+    .unwrap();
+    assert_eq!(u.total_tokens(), 10, "the sum, not the sent total: {u:?}");
+    // And the sum rides the wire, in the order the goldens pin.
+    assert_eq!(
+        serde_json::to_value(u).unwrap(),
+        serde_json::json!({
+            "input_tokens": 7,
+            "output_tokens": 3,
+            "total_tokens": 10,
+            "cached_prompt_tokens": null
+        })
+    );
 }
