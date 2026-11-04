@@ -249,31 +249,24 @@ pub fn section(file: &Path) -> String {
 #[must_use]
 pub fn with_path(prompt: &str, file: &Path) -> String {
     let section = section(file);
-    let Some(start) = prompt.find(PLAN_SECTION_ANCHOR) else {
+    let Some((head, rest)) = prompt.split_once(PLAN_SECTION_ANCHOR) else {
         return format!("{prompt}\n\n{section}");
     };
-    // `find` indexes at a char boundary, so the slices are safe. The
-    // section's body is a single paragraph, so the first layer separator
-    // after the header's blank line bounds the old section — a
-    // heading-only boundary would run to end-of-prompt and swallow the
-    // skills catalog, which carries no `# ` heading of its own.
-    let header_end = prompt
-        .get(start..)
-        .and_then(|rest| rest.find('\n').map(|i| start + i))
-        .unwrap_or(prompt.len());
-    let end = prompt
-        .get(header_end + 2..)
-        .and_then(|rest| rest.find("\n\n").map(|i| header_end + 2 + i))
-        .unwrap_or(prompt.len());
-    let mut out = prompt.get(..start).unwrap_or(prompt).to_owned();
+    // The section's body is one paragraph (pinned by the
+    // tests::section_has_no_blank_line_inside invariant), so the first blank
+    // line after the anchor bounds the old section — a heading-only boundary
+    // would run to end-of-prompt and swallow the skills catalog, which carries
+    // no `# ` heading of its own.
+    let tail = rest.split_once("\n\n");
+    let mut out = head.to_owned();
     while out.ends_with(' ') || out.ends_with('\n') {
         out.pop();
     }
     out.push_str("\n\n");
     out.push_str(&section);
-    if end < prompt.len() {
+    if let Some((_, tail)) = tail {
         out.push_str("\n\n");
-        out.push_str(prompt.get(end + 2..).unwrap_or(""));
+        out.push_str(tail);
     }
     out
 }
