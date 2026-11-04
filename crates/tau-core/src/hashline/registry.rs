@@ -354,13 +354,13 @@ impl Registry {
             None => self.file_hint.get(protect).copied().unwrap_or(self.probe),
         };
         loop {
-            for step in 0..=crate::hashline::HASH_SPACE {
-                let idx = (start + step * (crate::hashline::HASH_SPACE - 3))
-                    % crate::hashline::HASH_SPACE;
+            // One stride walk covers the space exactly: gcd(STRIDE, HASH_SPACE) = 1
+            // (pinned at tests.rs:34), so HASH_SPACE steps hit every slot once.
+            for step in 0..crate::hashline::HASH_SPACE {
+                let idx = (start + step * crate::hashline::STRIDE) % crate::hashline::HASH_SPACE;
                 let candidate = idx_to_hash(idx);
                 if !taken(self, &candidate) {
-                    let after =
-                        (idx + crate::hashline::HASH_SPACE - 3) % crate::hashline::HASH_SPACE;
+                    let after = (idx + crate::hashline::STRIDE) % crate::hashline::HASH_SPACE;
                     self.probe = after;
                     if line.is_some() {
                         self.file_hint.insert(protect.to_owned(), after);
