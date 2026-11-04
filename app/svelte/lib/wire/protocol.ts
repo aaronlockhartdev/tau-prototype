@@ -154,7 +154,9 @@ export interface ToolPayload {
   output: ToolOutput;
   /** GUI-only result detail (#243); absent when the tool does not split. */
   ui_detail?: ToolOutput;
-  status?: string;
+  // The core writes this only on the terminal record; a call in flight writes
+  // no key at all (payload.rs ToolStatus is Option, skipped when None).
+  status?: 'ok' | 'error' | 'cancelled';
 }
 
 export interface SystemPayload {
