@@ -352,16 +352,15 @@ fn a_fully_buffered_window_plans_done_not_an_empty_slice() {
 }
 
 #[test]
-fn an_empty_window_with_a_zero_threshold_plans_done() {
-    // #399: `observe_threshold = 0` is a legal config and clears activation
-    // on zero raw tokens. With the cursor past every entry the window is
-    // empty — the plan is Done, not a span over no entries.
+fn an_empty_window_plans_done() {
+    // The cursor past every entry leaves the window empty: the plan is Done,
+    // not a span over no entries. The config is one the loader accepts —
+    // `observe_threshold = 0` is refused (`Om::validate`, pinned by
+    // config::tests::layers::a_zero_om_threshold_is_rejected_naming_the_field),
+    // so #399's zero-threshold premise is gone (audit 5E).
     let dir = tempfile::tempdir().unwrap();
     let mut store = store_with_text_entries(dir.path(), 3, 100);
-    let om = crate::config::Om {
-        observe_threshold: 0,
-        ..crate::config::Om::default()
-    };
+    let om = crate::config::Om::default();
     let record = OmRecord {
         cursor: Some(crate::om::Cursor {
             entry_id: "00000003".into(),
@@ -412,4 +411,25 @@ fn an_off_branch_buffer_cursor_cuts_by_id_not_by_absence() {
         TurnEndAction::Done => {}
         other => panic!("the off-branch cursor re-covered chunk material: {other:?}"),
     }
+}
+#[test]
+fn observe_head_over_an_empty_window_is_none() {
+    // The span is first-to-last, so an empty window has no span to name:
+    // `None` carries that, where the span's constructor needed an `expect`
+    // for a case its caller guarded by hand (audit 5E).
+    let state = OmState::from_config(&crate::config::Om::default(), OmRecord::default());
+    assert!(state.observe_head(&[], 1_000).is_none());
+}
+
+#[test]
+fn observe_head_over_a_non_empty_window_names_its_span() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_text_entries(dir.path(), 3, 100);
+    let state = OmState::from_config(&crate::config::Om::default(), OmRecord::default());
+    let window = store.entries_range(0, 3).unwrap();
+    let head = state
+        .observe_head(&window, 1_000)
+        .expect("a non-empty window");
+    assert_eq!(head.0.first_id, "00000001");
+    assert_eq!(head.0.last_id, "00000003");
 }

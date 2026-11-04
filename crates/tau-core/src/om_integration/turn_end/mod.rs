@@ -392,13 +392,6 @@ impl OmState {
         if om::should_reflect(self.record.observation_tokens, &self.config) {
             return TurnEndAction::Reflect { level: 0 };
         }
-        if fresh.is_empty() {
-            // Nothing left for the settle to observe, no paid call. A legal
-            // `observe_threshold = 0` clears activation on an empty window,
-            // and `observe_head`'s span needs a first entry — the empty
-            // window is Done, not an empty Observer round-trip (#399).
-            return TurnEndAction::Done;
-        }
         if self.activation_reached(raw) {
             // A settle observes a bounded span, not the whole window: the bound
             // is the activation threshold, the volume one Observer pass is sized
@@ -411,8 +404,12 @@ impl OmState {
             let bound = self
                 .config
                 .observe_threshold_for(self.record.observation_tokens);
-            let (span, transcript, _) = self.observe_head(fresh, bound);
-            return TurnEndAction::Observe { transcript, span };
+            // The empty window (the cursor past every entry) has no span, and
+            // with no span there is nothing to observe: Done, not an empty
+            // Observer round-trip (#399, now carried by the `Option`).
+            if let Some((span, transcript, _)) = self.observe_head(fresh, bound) {
+                return TurnEndAction::Observe { transcript, span };
+            }
         }
         TurnEndAction::Done
     }
@@ -435,7 +432,11 @@ impl OmState {
     /// over material the Observer was never shown. A window at activation is
     /// never observed by nothing.
     #[must_use]
-    pub fn observe_head(&self, unobserved: &[Entry], bound: u32) -> (ObservedSpan, String, u32) {
+    pub fn observe_head(
+        &self,
+        unobserved: &[Entry],
+        bound: u32,
+    ) -> Option<(ObservedSpan, String, u32)> {
         // The span reaches the first entry with prompt material, so the Observer
         // is given something to observe.
         let content_floor = unobserved
@@ -453,7 +454,9 @@ impl OmState {
             len += 1;
         }
         let head = &unobserved[..len];
-        (ObservedSpan::of(head), transcript(head), seen)
+        // A span is first-to-last, so an empty window has none.
+        let (first, last) = (head.first()?, head.last()?);
+        Some((ObservedSpan::of(first, last), transcript(head), seen))
     }
 
     /// The Reflector prompt for a level (spec §4): the frozen variant

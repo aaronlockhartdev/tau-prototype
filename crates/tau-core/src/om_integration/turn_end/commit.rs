@@ -19,17 +19,11 @@ pub struct ObservedSpan {
 }
 
 impl ObservedSpan {
-    /// The span a slice of raw entries covers, first to last. The slice is
-    /// never empty: the observe bound always keeps its first entry, and the
-    /// observe gate never fires over an empty window.
+    /// The span from its first entry to its last. An empty window has no
+    /// span: `observe_head` answers `None` for one, so this constructor
+    /// always has both ends.
     #[must_use]
-    pub fn of(entries: &[Entry]) -> Self {
-        let first = entries
-            .first()
-            .expect("the observe bound keeps the first entry of a non-empty window");
-        let last = entries
-            .last()
-            .expect("the observe bound keeps the first entry of a non-empty window");
+    pub fn of(first: &Entry, last: &Entry) -> Self {
         Self {
             first_id: first.id.clone(),
             last_id: last.id.clone(),

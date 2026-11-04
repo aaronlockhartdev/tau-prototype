@@ -188,18 +188,16 @@ fn read_candidates(
         }
     };
     let candidates = unobserved_slice(&window, live.buffer_cursor.as_deref()).to_vec();
-    // The turn-end pass may have committed everything the spawn snapshot
-    // saw (D4: the file cursor wins over the snapshot): nothing left to
-    // buffer. Consume the trigger and stop — a panic under the session's
-    // inner lock would leave a half-mutated `Inner` that no later reader
-    // could tell apart from a good one.
-    if candidates.is_empty() {
-        g.om_inflight = None;
-        return None;
-    }
     // The cycle's call is the next increment-sized slice, not every
     // unbuffered entry: no Observer call's input is a whole window (#399).
-    let (span, _, coverage) = live.observe_head(&candidates, config.buffer_increment());
+    // An empty candidate set — the turn-end pass committed everything the
+    // spawn snapshot saw (D4: the file cursor wins over the snapshot) — has no
+    // span: consume the trigger and stop.
+    let Some((span, _, coverage)) = live.observe_head(&candidates, config.buffer_increment())
+    else {
+        g.om_inflight = None;
+        return None;
+    };
     let cut = candidates
         .iter()
         .position(|e| e.id == span.last_id)
