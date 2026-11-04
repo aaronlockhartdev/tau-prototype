@@ -145,17 +145,6 @@ impl GenerationProfile {
             },
         }
     }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.temperature.is_none()
-            && self.top_p.is_none()
-            && self.frequency_penalty.is_none()
-            && self.presence_penalty.is_none()
-            && self.max_tokens.is_none()
-            && self.thinking.is_none()
-            && self.extra_body.is_empty()
-    }
 }
 
 /// One `extra_body` value: a typed scalar (no `serde_json::Value` crosses
