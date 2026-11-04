@@ -18,22 +18,19 @@
   } from '../lib/store/store.svelte';
   import TauLogo from './TauLogo.svelte';
   import type { Workspace } from '../lib/wire/protocol';
-  import { useContextMenu } from '../lib/display/useContextMenu.svelte';
+  import { contextMenu, openMenu, useContextMenu } from '../lib/display/useContextMenu.svelte';
   import { Bell, Maximize2 } from '@lucide/svelte';
 
-  // The right-click menu: its position plus the selection it acts on.
-  let ctx = $state<{ x: number; y: number; ids: string[] } | null>(null);
-  // The rendered position (clamped into the viewport after first render)
-  // plus the menu element the clamp measures.
-  const menu = $state<{ pos: { x: number; y: number }; el: HTMLDivElement | undefined }>({
-    pos: { x: 0, y: 0 },
-    el: undefined
-  });
+  // The right-click menu acts on the selection it opened on; the menu's own
+  // position and element are the shared shape (useContextMenu).
+  const menu = contextMenu();
+  // The selection the menu opened on — read by the label, so it is state.
+  let ids = $state<string[]>([]);
 
   // Any click inside the strip is the tabs' own (tabSelect), so the
   // document click-away below must not race it — same for the menu.
   function onTabClick(e: MouseEvent, w: Workspace): void {
-    ctx = null;
+    menu.anchor = null;
     tabSelect(w.id, e);
     if (!(e.metaKey || e.ctrlKey || e.shiftKey)) void openWorkspace(w);
   }
@@ -42,28 +39,22 @@
   // tab offers archive for the whole selection; a single tab reads as its
   // own one-element selection (the session tree's rule).
   function onTabContext(e: MouseEvent, w: Workspace): void {
-    e.preventDefault();
-    ctx = {
-      x: e.clientX,
-      y: e.clientY,
-      ids: store.tabSelected.includes(w.id) ? store.tabSelected : [w.id]
-    };
-    menu.pos = { x: e.clientX, y: e.clientY };
+    openMenu(menu, e);
+    ids = store.tabSelected.includes(w.id) ? store.tabSelected : [w.id];
   }
 
-  const menuLabel = $derived(ctx && ctx.ids.length > 1 ? `archive (${ctx.ids.length})` : 'archive');
+  const menuLabel = $derived(ids.length > 1 ? `archive (${ids.length})` : 'archive');
 
   function applyMenuAction(): void {
-    const ids = ctx?.ids ?? [];
-    ctx = null;
+    menu.anchor = null;
     void closeWorkspaces(store.workspaces.filter((w) => ids.includes(w.id)));
   }
   $effect(() =>
-    useContextMenu(ctx, menu, {
+    useContextMenu(menu, {
       close: () => {
         store.tabSelected = [];
         store.tabSelAnchor = null;
-        ctx = null;
+        menu.anchor = null;
       },
       ignoreClick: (e) => {
         const t = e.target as Element | null;
@@ -113,7 +104,7 @@
   </button>
 </div>
 
-{#if ctx}
+{#if menu.anchor}
   <div class="ctxmenu" role="menu" bind:this={menu.el} style:left="{menu.pos.x}px" style:top="{menu.pos.y}px">
     <button type="button" role="menuitem" onclick={() => applyMenuAction()}>
       {menuLabel}

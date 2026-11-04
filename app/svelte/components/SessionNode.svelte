@@ -19,7 +19,7 @@
   import { nextSelection } from '../lib/rules/selection';
   import { tick } from 'svelte';
   import { Archive } from '@lucide/svelte';
-  import { useContextMenu } from '../lib/display/useContextMenu.svelte';
+  import { contextMenu, openMenu, useContextMenu } from '../lib/display/useContextMenu.svelte';
   import { bucketAge, fmtAgo } from '../lib/display/format';
   import SessionNode from './SessionNode.svelte';
   import TreeNode from './TreeNode.svelte';
@@ -164,7 +164,7 @@
     return out;
   }
   function applyMenuAction(item: { archive: string[]; restore: string[]; delete: string[] }): void {
-    ctx = null;
+    menu.anchor = null;
     const q = pane(ws);
     if (q) q.selected = [];
     void Promise.all([
@@ -173,19 +173,8 @@
       ...item.delete.map((id) => deleteSession(ws, id))
     ]);
   }
-  let ctx = $state<{ x: number; y: number } | null>(null);
-  // The rendered position (clamped into the viewport after first render)
-  // plus the menu element the clamp measures.
-  const menu = $state<{ pos: { x: number; y: number }; el: HTMLDivElement | undefined }>({
-    pos: { x: 0, y: 0 },
-    el: undefined
-  });
-  function onContext(e: MouseEvent): void {
-    e.preventDefault();
-    ctx = { x: e.clientX, y: e.clientY };
-    menu.pos = { x: e.clientX, y: e.clientY };
-  }
-  $effect(() => useContextMenu(ctx, menu, { close: () => (ctx = null) }));
+  const menu = contextMenu();
+  $effect(() => useContextMenu(menu, { close: () => (menu.anchor = null) }));
   function sessionRunning(s: SessionState): boolean {
     return (
       s.turn === 'running' ||
@@ -265,10 +254,10 @@
       }
   }
   onToggle={kids.length > 0 ? () => toggleGroup(session.meta.id) : undefined}
-  onContext={onContext}
+  onContext={(e) => openMenu(menu, e)}
   label={rowLabel}
 />
-{#if ctx}
+{#if menu.anchor}
   <div class="ctxmenu" role="menu" bind:this={menu.el} style:left="{menu.pos.x}px" style:top="{menu.pos.y}px">
     {#each menuItems() as item (item.label)}
       <button type="button" role="menuitem" onclick={() => void applyMenuAction(item)}>

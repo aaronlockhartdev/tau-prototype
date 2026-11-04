@@ -208,6 +208,28 @@ describe('SessionNode', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  // The audit's gap: the menu's position was never asserted, only its
+  // presence. The anchor is where the right-click happened; a click past the
+  // viewport is clamped back into it (the shared useContextMenu clamp).
+  it('right-click puts the menu at the click', async () => {
+    await mount(seed());
+    await fireEvent.contextMenu(rowOf('s1'), { clientX: 100, clientY: 200 });
+    const menu = screen.getByRole('menu');
+    expect(menu.style.left).toBe('100px');
+    expect(menu.style.top).toBe('200px');
+  });
+
+  it('a right-click past the viewport edge is clamped inside it', async () => {
+    await mount(seed());
+    await fireEvent.contextMenu(rowOf('s1'), {
+      clientX: window.innerWidth + 500,
+      clientY: window.innerHeight + 500
+    });
+    const menu = screen.getByRole('menu');
+    expect(Number.parseInt(menu.style.left, 10)).toBeLessThanOrEqual(window.innerWidth - 4);
+    expect(Number.parseInt(menu.style.top, 10)).toBeLessThanOrEqual(window.innerHeight - 4);
+  });
+
   it('right-click offers restore and delete for an archived row', async () => {
     const s = seed();
     s.archived = true;
