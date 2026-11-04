@@ -85,9 +85,6 @@ fn endpoint_url(base: &str, path: &str) -> String {
 }
 
 fn resolve_key(provider: &Provider) -> Option<String> {
-    if provider.key_env.is_empty() {
-        return None;
-    }
     std::env::var(&provider.key_env)
         .ok()
         .filter(|k| !k.is_empty())
