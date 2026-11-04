@@ -5,15 +5,15 @@
 //! (the last `subagent` state entry); the supervisor's in-memory registry is
 //! empty on a fresh boot. These functions read that ground truth — the disk
 //! half of the snapshot — so the GUI's badges reflect the on-disk state after
-//! a restart. The `ChildStateRef` mirror is the deserialization target: it
-//! keeps the `Done` output out of the record, which the full `ChildState`
-//! serde would require.
+//! a restart. The scans are `restore`'s, the same reader the re-adopt uses:
+//! one decode of the record, not one per projection.
 
 use super::ContextMode;
-use super::states::{StoppedBy, WaitingOn};
+use super::record::ChildStateRecord;
+use super::restore;
+use super::states::WaitingOn;
 use crate::session::{Entry, SessionStore, list_workspace};
 use std::path::Path;
-use tau_protocol::EntryKind;
 
 /// The parent's children from disk: every on-disk session whose header names
 /// `parent` (and is not archived), each carrying its last recorded lifecycle
@@ -29,48 +29,30 @@ pub fn restore_children_from_disk(cwd: &Path, parent: &str) -> Vec<tau_protocol:
         .map(|m| {
             let mut store = SessionStore::for_workspace(cwd, &m.id);
             // Two bounded reads (#302): the spawn record sits at the child's
-            // log head, its last state record at the tail — the fleet read
-            // never parses a child's whole file.
+            // log head (a fork child appends its own to the copied tree), its
+            // last state record at the tail — the fleet read never parses a
+            // child's whole file.
             let head = store
                 .open()
-                .and_then(|()| store.entries_range(0, super::restore::SPAWN_HEAD))
+                .and_then(|()| store.entries_range(0, restore::SPAWN_HEAD))
                 .unwrap_or_default();
-            let tail = store
-                .entries_tail(super::restore::STATE_TAIL)
-                .unwrap_or_default();
+            let tail = store.entries_tail(restore::STATE_TAIL).unwrap_or_default();
             // The child's post-restart state: a `running` record is a
             // restart artifact (the process is gone) and reads back as a
             // parked child (ticket #221's negative bar).
-            let state = last_state(&tail).map_or(
-                ChildStateRef::Idle {
+            let state = restore::last_state_record(&tail).map_or(
+                ChildStateRecord::Idle {
                     waiting_on: WaitingOn::Parent,
                 },
                 settled,
             );
-            // The spawn record is the child's provenance (ADR-0001):
-            // agent type + context mode. A fresh/compacted child writes it at
-            // its log's head, a fork child appends it to the copied parent
-            // tree, so both windows are searched. Absent (a hand-made file) →
-            // the `general`/`fresh` defaults.
-            let spawn = head
-                .iter()
-                .find(|e| e.kind == EntryKind::Subagent && e.payload["event"] == "spawn")
-                .or_else(|| {
-                    tail.iter()
-                        .find(|e| e.kind == EntryKind::Subagent && e.payload["event"] == "spawn")
-                });
-            let agent_type = spawn
-                .and_then(|e| e.payload["type"].as_str())
-                .unwrap_or("general")
-                .to_owned();
-            let context_mode = spawn
-                .and_then(|e| e.payload["context_mode"].as_str())
-                .and_then(|s| match s {
-                    "compacted" => Some(ContextMode::Compacted),
-                    "fork" => Some(ContextMode::Fork),
-                    _ => None,
-                })
-                .unwrap_or(ContextMode::Fresh);
+            // The spawn record is the child's provenance (ADR-0001): agent
+            // type + context mode. Absent (a hand-made file) → the built-in
+            // spawn, the same default `restore`'s `DiskChild` reads.
+            let (agent_type, context_mode) = match restore::spawn_record(&head, &tail) {
+                Some(record) => (record.agent_type, record.context_mode),
+                None => ("general".to_owned(), ContextMode::Fresh),
+            };
             tau_protocol::SubagentInfo {
                 // No live bridge to address a dead child by handle: the
                 // child's session id is the stable key.
@@ -104,7 +86,7 @@ pub fn restore_children_from_disk(cwd: &Path, parent: &str) -> Vec<tau_protocol:
 /// turn-derived `idle`. A `running` record reads back as a parked child.
 #[must_use]
 pub fn own_state_for(entries: &[Entry]) -> Option<tau_protocol::SubagentState> {
-    let state = last_state(entries).map(settled)?;
+    let state = restore::last_state_record(entries).map(settled)?;
     Some(state.to_protocol())
 }
 
@@ -112,77 +94,12 @@ pub fn own_state_for(entries: &[Entry]) -> Option<tau_protocol::SubagentState> {
 /// a record that ends in `running` (no rest was observed before the crash)
 /// reads back as a parked child, never a live turn (ticket #221: the
 /// reconcile must not resurrect a `running` that no longer exists).
-fn settled(state: ChildStateRef) -> ChildStateRef {
+fn settled(state: ChildStateRecord) -> ChildStateRecord {
     match state {
-        ChildStateRef::Running => ChildStateRef::Idle {
+        ChildStateRecord::Running => ChildStateRecord::Idle {
             waiting_on: WaitingOn::Parent,
         },
         other => other,
-    }
-}
-
-/// The child's last lifecycle state: the last `subagent` state entry,
-/// deserialized with the exact serde the live path writes (child.rs
-/// `set_state`), so a restart reads back what a run recorded.
-fn last_state(entries: &[Entry]) -> Option<ChildStateRef> {
-    entries
-        .iter()
-        .rev()
-        .find(|e| e.kind == EntryKind::Subagent && e.payload["event"] == "state")
-        .and_then(|e| serde_json::from_value::<ChildStateRef>(e.payload.clone()).ok())
-}
-
-/// The child's persisted state (the `subagent` state entry's shape): a
-/// `ChildState` mirror that keeps the done output out of the record —
-/// `set_state` writes the discriminant + non-output fields, and the full
-/// `ChildState` serde would require the `Done` output.
-/// The record has no `other` arm, unlike the wire's decoder: a record that
-/// cannot state its detail decodes to nothing and the restore reads no state,
-/// because the file was written by this same build — there is no newer name to
-/// keep, only a fact the writer failed to record.
-#[derive(serde::Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum ChildStateRef {
-    Running,
-    Idle {
-        // The target is what `set_state` writes; a frame that omits it
-        // states no wait, and the restore declines the record rather than
-        // picking a target (the wire decoder's rule for a truncated frame,
-        // applied to the record).
-        waiting_on: WaitingOn,
-    },
-    Awaiting,
-    Done,
-    Failed {
-        reason: String,
-    },
-    Stopped {
-        by: StoppedBy,
-    },
-}
-
-impl ChildStateRef {
-    /// The persisted state as the protocol's tagged enum (#346): the record
-    /// carries the reason and the stopper, so the restart's badge says the
-    /// same thing the live event did. Done's output is the notify record's,
-    /// never the state entry's, so it reads back absent.
-    #[must_use]
-    fn to_protocol(&self) -> tau_protocol::SubagentState {
-        match self {
-            ChildStateRef::Running => tau_protocol::SubagentState::Running,
-            ChildStateRef::Idle { waiting_on } => tau_protocol::SubagentState::Idle {
-                waiting_on: (*waiting_on).into(),
-            },
-            ChildStateRef::Awaiting => tau_protocol::SubagentState::Awaiting,
-            ChildStateRef::Done => tau_protocol::SubagentState::Done { output: None },
-            ChildStateRef::Failed { reason } => tau_protocol::SubagentState::Failed {
-                reason: reason.clone(),
-            },
-            ChildStateRef::Stopped { by } => tau_protocol::SubagentState::Stopped {
-                by: (*by).into(),
-                resume_contract: None,
-            },
-        }
     }
 }
 
@@ -190,7 +107,7 @@ impl ChildStateRef {
 mod tests {
     use super::*;
     use crate::session::Entry;
-
+    use tau_protocol::EntryKind;
     /// A `subagent` state entry in the exact shape the live path writes
     /// (child.rs `set_state`): the `event` tag plus the `state` tag.
     fn state_entry(state: &str, extra: &serde_json::Value) -> Entry {

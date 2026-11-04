@@ -1,3 +1,4 @@
+use super::record::{SpawnRecord, SubagentRecord};
 use super::route::title_on_disk;
 use super::{
     AgentSession, Arc, AtomicBool, AtomicUsize, Child, ChildState, ContextMode, Mutex, Ordering,
@@ -8,7 +9,6 @@ use crate::harness::SessionRole;
 use crate::om::OmRecord;
 use crate::om_integration::{self, OmState};
 use crate::tools;
-use serde_json::json;
 use tau_protocol::EntryKind;
 
 impl Supervisor {
@@ -81,19 +81,17 @@ impl Supervisor {
         // The spawn record: the parent link (session id + originating tool
         // call id) is the child's durable provenance (ADR-0001).
         let leaf = store.leaf().map_or(None, |l| l.map(|e| e.id));
+        let record = SubagentRecord::Spawn {
+            record: SpawnRecord {
+                agent_type: agent_type.to_owned(),
+                brief: brief.to_owned(),
+                context_mode,
+                parent: self.parent_session.clone(),
+                call: call_id.to_owned(),
+            },
+        };
         store
-            .append(
-                EntryKind::Subagent,
-                json!({
-                    "event": "spawn",
-                    "type": agent_type,
-                    "brief": brief,
-                    "context_mode": context_mode,
-                    "parent": self.parent_session,
-                    "call": call_id,
-                }),
-                leaf.as_deref(),
-            )
+            .append(EntryKind::Subagent, record.to_value(), leaf.as_deref())
             .map_err(|e| format!("subagent_spawn: {e}"))?;
 
         // prefix; compacted = the parent's log verbatim as the frozen

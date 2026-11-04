@@ -1,7 +1,8 @@
+use super::record::{ChildStateRecord, SubagentRecord};
 use super::states::{ChildState, ContextMode, TurnOrigin, WaitingOn};
 use crate::agent::AgentSession;
 use parking_lot::Mutex;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tau_protocol::EntryKind;
@@ -64,28 +65,11 @@ impl Child {
         // The record carries the discriminant plus the non-output variant
         // fields only: done's output lives in the notify record (the
         // report), not twice.
-        let payload = match state {
-            ChildState::Running => json!({ "event": "state", "state": "running" }),
-            ChildState::Idle { waiting_on } => json!({
-                "event": "state",
-                "state": "idle",
-                "waiting_on": waiting_on.as_str(),
-            }),
-            ChildState::Awaiting => json!({ "event": "state", "state": "awaiting" }),
-            ChildState::Done { .. } => json!({ "event": "state", "state": "done" }),
-            ChildState::Failed { reason } => json!({
-                "event": "state",
-                "state": "failed",
-                "reason": reason,
-            }),
-            ChildState::Stopped { by } => json!({
-                "event": "state",
-                "state": "stopped",
-                "by": by.as_str(),
-            }),
+        let record = SubagentRecord::State {
+            state: ChildStateRecord::from_state(state),
         };
         self.agent
-            .append_entry(EntryKind::Subagent, payload)
+            .append_entry(EntryKind::Subagent, record.to_value())
             .map_err(|e| format!("subagent state entry failed: {e}"))
     }
 

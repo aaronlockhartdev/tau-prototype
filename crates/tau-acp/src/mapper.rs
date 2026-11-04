@@ -295,8 +295,7 @@ mod tests {
             parent: None,
             kind: kind.clone(),
             timestamp: 1,
-            payload: tau_protocol::payload::EntryPayload::from_entry(&kind, &stored)
-                .map(Box::new),
+            payload: tau_protocol::payload::EntryPayload::from_entry(&kind, &stored).map(Box::new),
             blob: None,
             first_kept: None,
         }
@@ -308,9 +307,9 @@ mod tests {
         let mut payload = json!({
             "call_id": "c1",
             "name": name,
-            "args": args,
             "output": output,
         });
+        payload["args"] = args;
         if let Some(status) = status {
             payload["status"] = json!(status);
         }
@@ -475,13 +474,7 @@ mod tests {
     #[test]
     fn tool_call_is_two_phase() {
         let mut m = Mapper::default();
-        let start = tool(
-            "t1",
-            "bash",
-            json!({ "command": "cargo test" }),
-            "",
-            None,
-        );
+        let start = tool("t1", "bash", json!({ "command": "cargo test" }), "", None);
         let out = m.on_entry(&start);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["sessionUpdate"], "tool_call");
@@ -541,13 +534,7 @@ mod tests {
         );
         // The terminal record is the phase change, and it carries the whole
         // output.
-        let done = tool(
-            "t1",
-            "bash",
-            args,
-            "chunk-1\nchunk-2\nexit 0",
-            Some("ok"),
-        );
+        let done = tool("t1", "bash", args, "chunk-1\nchunk-2\nexit 0", Some("ok"));
         let out = m.on_entry(&done);
         assert_eq!(out.len(), 1, "one update for the terminal phase");
         assert_eq!(out[0]["sessionUpdate"], "tool_call_update");

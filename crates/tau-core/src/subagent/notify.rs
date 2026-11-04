@@ -1,8 +1,8 @@
+use super::record::{NotifyRecord, SubagentRecord};
 use super::{
     Arc, Child, ChildState, ResumeContract, StateNotice, Supervisor, Value, WaitingOn, WakeKind,
     WakeNotice,
 };
-use serde_json::json;
 use tau_protocol::EntryKind;
 
 impl Supervisor {
@@ -102,14 +102,18 @@ impl Supervisor {
             return format!("parent_notify: unknown child {handle}");
         };
 
-        let mut payload = json!({ "event": "notify", "text": text, "done": done });
-        if let Some(output) = &output {
-            payload["output"] = output.clone();
-        }
-        if let Some(w) = waiting_on {
-            payload["waiting_on"] = json!(w.as_str());
-        }
-        if let Err(e) = child.agent.append_entry(EntryKind::Subagent, payload) {
+        let record = SubagentRecord::Notify {
+            note: NotifyRecord {
+                text: text.to_owned(),
+                done,
+                output: output.clone(),
+                waiting_on,
+            },
+        };
+        if let Err(e) = child
+            .agent
+            .append_entry(EntryKind::Subagent, record.to_value())
+        {
             return format!("parent_notify: recording the note failed: {e}");
         }
         child.set_last_message(text);

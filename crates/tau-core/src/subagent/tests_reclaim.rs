@@ -164,12 +164,80 @@ fn disk_children_read_the_provenance_of_a_fork_child_from_its_tail() {
     let children = restore::disk_children(dir, "p", None);
     assert_eq!(children.len(), 1);
     assert_eq!(
-        children[0].agent_type, "auditor",
+        children[0].provenance().0,
+        "auditor",
         "the fork child's spawn record sits at its log's tail"
     );
     assert!(
-        matches!(children[0].context_mode, ContextMode::Fork),
+        matches!(children[0].provenance().1, ContextMode::Fork),
         "a head-only lookup would have read the general/fresh defaults"
+    );
+}
+
+/// A fork child's log is the parent's copied tree, so it can carry the
+/// parent's *own* spawn records — the provenance of a sibling the parent
+/// spawned earlier. The child's own record is the newest one, so a reader
+/// that searches the head window first reads the sibling's provenance.
+#[test]
+fn a_fork_child_reads_its_own_provenance_not_a_siblings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let mut p = SessionStore::for_workspace(dir, "p");
+    p.create().unwrap();
+    // The parent spawned a child earlier; that spawn record sits in the
+    // parent's tree, and a fork of the parent copies it wholesale.
+    p.append(
+        EntryKind::Subagent,
+        json!({
+            "event": "spawn",
+            "type": "general",
+            "brief": "the sibling's brief",
+            "context_mode": "fresh",
+            "parent": "p",
+            "call": "t-sib",
+        }),
+        None,
+    )
+    .unwrap();
+    for i in 0..4 {
+        p.append(EntryKind::User, json!({ "text": format!("p{i}") }), None)
+            .unwrap();
+    }
+    let mut c = SessionStore::fork_from(&p, "cf").unwrap();
+    c.set_parent("p").unwrap();
+    let leaf = c.leaf().unwrap().map(|e| e.id);
+    // The fork's own record: a different type and mode, appended at the leaf.
+    c.append(
+        EntryKind::Subagent,
+        json!({
+            "event": "spawn",
+            "type": "auditor",
+            "brief": "the fork's brief",
+            "context_mode": "fork",
+            "parent": "p",
+            "call": "t-fork",
+        }),
+        leaf.as_deref(),
+    )
+    .unwrap();
+    let leaf = c.leaf().unwrap().map(|e| e.id);
+    c.append(
+        EntryKind::Subagent,
+        state_entry("done", &json!({})).payload,
+        leaf.as_deref(),
+    )
+    .unwrap();
+
+    let children = restore::disk_children(dir, "p", None);
+    assert_eq!(children.len(), 1);
+    assert_eq!(
+        children[0].provenance().0,
+        "auditor",
+        "the newest spawn record is the child's own, not one the copy carried"
+    );
+    assert!(
+        matches!(children[0].provenance().1, ContextMode::Fork),
+        "the mode is the fork's, not the sibling's fresh spawn"
     );
 }
 

@@ -392,6 +392,7 @@ mod lifecycle;
 mod link;
 mod notify;
 mod reclaim;
+mod record;
 pub(crate) mod restore;
 mod route;
 pub(crate) mod snapshot;

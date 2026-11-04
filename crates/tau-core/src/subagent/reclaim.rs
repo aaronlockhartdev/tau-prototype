@@ -139,6 +139,7 @@ impl Supervisor {
         let d: &DiskChild = disk
             .iter()
             .find(|i| i.name == name_or_id || i.child == name_or_id || i.handle == name_or_id)?;
+        let (agent_type, context_mode) = d.provenance();
         let mut store = SessionStore::for_workspace(&self.cwd, &d.child);
         store.open().ok()?;
         let record = OmState::load_record(&mut store).unwrap_or_default();
@@ -163,8 +164,8 @@ impl Supervisor {
             handle: d.handle.clone(),
             name: d.name.clone(),
             session_id: d.child.clone(),
-            agent_type: d.agent_type.clone(),
-            context_mode: d.context_mode,
+            agent_type,
+            context_mode,
             agent: agent.clone(),
             created: d.created,
             // Set the terminal state directly (no `set_state`): a re-adopt
