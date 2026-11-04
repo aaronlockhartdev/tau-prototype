@@ -44,6 +44,11 @@ export interface SessionState {
   // Output tokens/second of the session's most recent turn (status bar).
   tps: number;
   turn: 'running' | 'idle' | 'starting';
+  // The open generation: bumped by `openSession` (the producer of a re-open),
+  // the signal the transcript's one-shot tail page compares. An event patch
+  // replaces the row's object too (touchChild, setArchived, the sub-agent
+  // mirror), so identity is not the re-open fact (audit FE9e).
+  opened: number;
   // The session's OM state (the status bar's gauge): the activity kind
   // (the om_status events) and the gauge values (the snapshots).
   om: {
@@ -120,6 +125,8 @@ function snapshotToState(snap: Snapshot): SessionState {
     ),
     usage: meta.usage,
     turn: snap.live.turn === 'running' ? 'running' : 'idle',
+    // openSession stamps the generation; a bare snapshot has none yet.
+    opened: 0,
     tps: 0,
     // The snapshot carries the gauge values; the activity kind is
     // event-driven (an open session is idle until a run starts).
@@ -151,6 +158,7 @@ export function makeStub(
     usage: null,
     tps: 0,
     turn: state === 'running' ? 'running' : 'idle',
+    opened: 0,
     om: { ...OM_IDLE },
     pending: [],
     parent,
@@ -243,6 +251,7 @@ export function openSession(sessions: SessionMap, sid: string, snap: Snapshot): 
     next.archived = prev.archived;
     next.last_modified = prev.last_modified;
   }
+  next.opened = (prev?.opened ?? 0) + 1;
   let out = { ...sessions, [sid]: next };
   // Self-heal the child stubs: the snapshot's sub-agent list is the
   // supervisor's ground truth, so it both fills a lost spawn and

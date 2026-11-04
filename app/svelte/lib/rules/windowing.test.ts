@@ -73,13 +73,13 @@ describe('scrollFetches (hysteresis + mid-turn union)', () => {
 describe('openFetches (open-tail, one-shot, mid-turn union)', () => {
   it('fetches the tail: the last OPEN_TAIL entries', () => {
     const st = makeWindowingState();
-    expect(openFetches(st, 'c', 30, 'idle')).toEqual([{ session: 'c', start: 10, count: 20 }]);
+    expect(openFetches(st, 'c', 30, 'idle', 0)).toEqual([{ session: 'c', start: 10, count: 20 }]);
     expect(st.lastFetched.get('c')).toEqual({ start: 10, end: 30 });
   });
 
   it('fetches the whole list when it is shorter than the tail', () => {
     const st = makeWindowingState();
-    expect(openFetches(st, 'c', 5, 'idle')).toEqual([{ session: 'c', start: 0, count: 5 }]);
+    expect(openFetches(st, 'c', 5, 'idle', 0)).toEqual([{ session: 'c', start: 0, count: 5 }]);
     expect(st.lastFetched.get('c')).toEqual({ start: 0, end: 5 });
   });
 
@@ -88,7 +88,7 @@ describe('openFetches (open-tail, one-shot, mid-turn union)', () => {
     // 23 entries: a tail-only page (3..23) leaves 0..3 unfetched, and 0 is
     // within FETCH_MARGIN of the page start, so scrollFetches never fetches
     // the head — it would render as preview stubs. The open page must reach 0.
-    expect(openFetches(st, 'c', 23, 'idle')).toEqual([{ session: 'c', start: 0, count: 23 }]);
+    expect(openFetches(st, 'c', 23, 'idle', 0)).toEqual([{ session: 'c', start: 0, count: 23 }]);
     expect(st.lastFetched.get('c')).toEqual({ start: 0, end: 23 });
   });
 
@@ -96,12 +96,12 @@ describe('openFetches (open-tail, one-shot, mid-turn union)', () => {
     const st = makeWindowingState();
     // 26 entries: the head (0) is more than FETCH_MARGIN below the tail page
     // start (6), so a scroll fetches it — the tail-only open page stands.
-    expect(openFetches(st, 'c', 26, 'idle')).toEqual([{ session: 'c', start: 6, count: 20 }]);
+    expect(openFetches(st, 'c', 26, 'idle', 0)).toEqual([{ session: 'c', start: 6, count: 20 }]);
   });
 
   it('unions the tail range into the mid-turn set while a turn runs', () => {
     const st = makeWindowingState();
-    openFetches(st, 'c', 30, 'running');
+    openFetches(st, 'c', 30, 'running', 0);
     // the union widens from the empty {0,0} default, so the tail range {10,30}
     // becomes {0,30}.
     expect(st.duringTurn.get('c')).toEqual({ start: 0, end: 30 });
@@ -109,35 +109,49 @@ describe('openFetches (open-tail, one-shot, mid-turn union)', () => {
 
   it('does not union while the turn is idle', () => {
     const st = makeWindowingState();
-    openFetches(st, 'c', 30, 'idle');
+    openFetches(st, 'c', 30, 'idle', 0);
     expect(st.duringTurn.get('c')).toBeUndefined();
   });
 
   it('does not re-issue on a re-fire for the same session (one-shot)', () => {
     const st = makeWindowingState();
-    openFetches(st, 'c', 30, 'idle');
-    expect(openFetches(st, 'c', 30, 'idle')).toEqual([]);
+    openFetches(st, 'c', 30, 'idle', 0);
+    expect(openFetches(st, 'c', 30, 'idle', 0)).toEqual([]);
   });
 
   it('unions on a same-session re-fire while a turn runs, without re-issuing', () => {
     const st = makeWindowingState();
-    openFetches(st, 'c', 30, 'idle');
-    expect(openFetches(st, 'c', 31, 'starting')).toEqual([]);
+    openFetches(st, 'c', 30, 'idle', 0);
+    expect(openFetches(st, 'c', 31, 'starting', 0)).toEqual([]);
     // the union widens from the empty {0,0} default
     expect(st.duringTurn.get('c')).toEqual({ start: 0, end: 31 });
   });
 
   it('issues its own tail for a different session', () => {
     const st = makeWindowingState();
-    openFetches(st, 'c', 30, 'idle');
-    expect(openFetches(st, 'd', 10, 'idle')).toEqual([{ session: 'd', start: 0, count: 10 }]);
+    openFetches(st, 'c', 30, 'idle', 0);
+    expect(openFetches(st, 'd', 10, 'idle', 0)).toEqual([{ session: 'd', start: 0, count: 10 }]);
+  });
+
+  // FE9e: the re-open fact is the record's open generation, not object identity.
+  it('a fresh generation re-arms the one-shot (a re-open, #49)', () => {
+    const st = makeWindowingState();
+    openFetches(st, 'c', 30, 'idle', 0);
+    expect(openFetches(st, 'c', 30, 'idle', 1)).toEqual([{ session: 'c', start: 10, count: 20 }]);
+  });
+
+  it('the same generation keeps the one-shot burned (an event patch)', () => {
+    const st = makeWindowingState();
+    openFetches(st, 'c', 30, 'idle', 3);
+    expect(openFetches(st, 'c', 30, 'idle', 3)).toEqual([]);
   });
 
   it('a dropped flag re-arms the one-shot (a closed session reopens)', () => {
+
     const st = makeWindowingState();
-    openFetches(st, 'c', 30, 'idle');
+    openFetches(st, 'c', 30, 'idle', 0);
     st.openedFor = null;
-    expect(openFetches(st, 'c', 30, 'idle')).toEqual([{ session: 'c', start: 10, count: 20 }]);
+    expect(openFetches(st, 'c', 30, 'idle', 0)).toEqual([{ session: 'c', start: 10, count: 20 }]);
   });
 });
 

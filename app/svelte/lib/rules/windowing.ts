@@ -21,8 +21,10 @@ export type TurnState = 'idle' | 'starting' | 'running';
 export interface WindowingState {
   lastFetched: Map<string, Range>;
   duringTurn: Map<string, Range>;
-  // The session the open-tail page was issued for: the one-shot guard (#42).
-  openedFor: string | null;
+  // The session the open-tail page was issued for, and the open generation it
+  // was issued against: the one-shot guard (#42). A fresh generation from
+  // `openSession` retires it (#49); an event patch's new object does not.
+  openedFor: { session: string; gen: number } | null;
 }
 
 export function makeWindowingState(): WindowingState {
@@ -72,7 +74,8 @@ export function openFetches(
   st: WindowingState,
   session: string,
   total: number,
-  turn: TurnState
+  turn: TurnState,
+  gen: number
 ): FetchRequest[] {
   // A session that fits in a tail page plus the render buffer is fetched in
   // full on open: a tail-only page leaves the head inside the buffer but
@@ -81,8 +84,8 @@ export function openFetches(
   const count = total <= OPEN_TAIL + FETCH_MARGIN ? total : OPEN_TAIL;
   const range: Range = { start: total - count, end: total };
   if (turn !== 'idle') union(st, session, range);
-  if (st.openedFor === session) return [];
-  st.openedFor = session;
+  if (st.openedFor?.session === session && st.openedFor.gen === gen) return [];
+  st.openedFor = { session, gen };
   st.lastFetched.set(session, range);
   return [{ session, start: range.start, count }];
 }

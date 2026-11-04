@@ -176,10 +176,6 @@
   // mid-turn union the turn-end effect re-reads). Plain maps — the policy's
   // own state, not reactive.
   const win = makeWindowingState();
-  // The session object each one-shot was burned on: a re-open replaces the
-  // object (fresh meta-only snapshot), and the replacement loses the
-  // previous object's page — the identity change is the re-open signal.
-  const openedObj = new Map<string, unknown>();
   // The current session's turn state (the policy's hysteresis / union input).
   function turnOf(c: string): TurnState {
     return store.sessions[c]?.turn ?? 'idle';
@@ -221,18 +217,18 @@
       win.openedFor = null;
       return;
     }
-    // A re-open replaces the session object while the one-shot is burned:
-    // the previous object's in-flight or applied page is lost with it, so
-    // drop the one-shot (and the hysteresis record) and let openFetches
-    // re-issue the tail page into the fresh state (#49).
-    if (win.openedFor === c && openedObj.get(c) !== s) {
+    // A re-open (openSession) bumps the record's open generation: the page
+    // issued against the old one is lost with the replaced state, so drop the
+    // one-shot (and the hysteresis record) and let openFetches re-issue the
+    // tail page into the fresh state (#49). An event patch replaces the object
+    // without bumping the generation, and is not a re-open (audit FE9e).
+    if (win.openedFor?.session === c && win.openedFor.gen !== s.opened) {
       win.openedFor = null;
       win.lastFetched.delete(c);
     }
-    openedObj.set(c, s);
     const n = all.length;
     if (n === 0) return;
-    for (const f of openFetches(win, c, n, turnOf(c))) void fetchWindow(c, f.start, f.count);
+    for (const f of openFetches(win, c, n, turnOf(c), s.opened)) void fetchWindow(c, f.start, f.count);
   });
 
   // A turn just ended: re-read the ranges hydrated while it ran (the policy

@@ -124,13 +124,32 @@ describe('Transcript', () => {
     seed(30);
     await mount();
     fetchWindow.mockClear();
+    // The re-open signal: openSession's record, one generation on.
     const s = seedState(meta('c1'));
     s.entries = entries(30);
+    s.opened = 1;
     resetMockStore({ current: 'c1', sessions: { c1: s } });
     await tick();
     expect(fetchWindow).toHaveBeenCalledTimes(1);
     expect(fetchWindow).toHaveBeenCalledWith('c1', 10, 20);
   });
+  // FE9e: the re-open signal is the record's open generation (bumped by
+  // openSession, like tailJump), not the session object's identity. An event
+  // patch replaces the object too (touchChild, setArchived, the sub-agent
+  // mirror) and must NOT burn the tail page again.
+  it('keeps the one-shot burned when an event patch replaces the session object', async () => {
+    seed(30);
+    await mount();
+    fetchWindow.mockClear();
+    // The shape applySubagentEvent/setArchived produce: the same id, a new
+    // object, `opened` unchanged.
+    const s = mockStore.sessions.c1!;
+    const patched = { ...s, state: 'running' as const };
+    resetMockStore({ current: 'c1', sessions: { c1: patched } });
+    await tick();
+    expect(fetchWindow).not.toHaveBeenCalled();
+  });
+
   it('fetches a page when the visible range drifts beyond the hysteresis margin', async () => {
     seed(30);
     await mount();
