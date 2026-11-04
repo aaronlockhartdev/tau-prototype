@@ -37,6 +37,9 @@
       return;
     }
     let live = true;
+    // The round trip starts now: the lines on screen are the previous file's,
+    // and the card must not show them while this file's highlight is in flight.
+    lines = [];
     void (async () => {
       let tokens;
       try {

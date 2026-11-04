@@ -84,6 +84,26 @@ describe('ChangesView', () => {
     expect(ls[1]!.querySelector('.src')?.textContent).toBe('two');
   });
 
+  // FE9b's live defect: the async mirror was never cleared on a source change,
+  // so switching files left the previous file's highlighted lines on screen for
+  // the whole re-highlight round trip.
+  it('shows no lines while the newly opened file highlights', async () => {
+    seedOpen('src/a.ts', 'one\ntwo', 'one\ntwo');
+    render(ChangesView);
+    await vi.waitFor(() => expect(lines().length).toBe(2));
+
+    vi.mocked(highlightLines).mockImplementationOnce(() => new Promise<never>(() => {}));
+    resetMockStore({
+      openFiles: { [WS]: [{ path: 'src/b.ts', ignored: false, size: 1 }] },
+      activeFile: { workspace: WS, path: 'src/b.ts' },
+      activeFileNew: 'fresh',
+      activeFileBase: 'fresh',
+      activeFileError: null
+    });
+    await tick();
+    expect(lines().length).toBe(0);
+  });
+
   it('does not diff the last line when only the trailing newline differs', async () => {
     seedOpen('src/a.ts', 'a\nb', 'a\nb\n'); // same lines; base carries a final newline
     render(ChangesView);

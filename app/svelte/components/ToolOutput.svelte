@@ -35,6 +35,11 @@
     const l = lang;
     if (n !== 'edit' && n !== 'read' && n !== 'write') return;
     let live = true;
+    // The round trip starts now: the header and the lines on screen are the
+    // previous result's, and must not show while this one highlights.
+    header = '';
+    truncated = '';
+    lines = [];
     void (async () => {
       if (n === 'edit') {
         const d = parseEditDiff(t);
