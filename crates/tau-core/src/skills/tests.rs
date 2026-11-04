@@ -116,6 +116,57 @@ fn unparseable_frontmatter_is_skipped() {
     assert!(discover(None, None, root.path()).is_empty());
 }
 
+// The quote handling's pair (audit Add6-B2: the positive is load-bearing, the
+// lone-quote negative is untested): a quoted field unquotes, and a value too
+// short to be a quote pair is the value itself.
+#[test]
+fn a_quoted_field_unquotes_and_a_lone_quote_does_not() {
+    let root = tempfile::tempdir().unwrap();
+    // The bare colon is the strict pass's rejection; the quoted name shows the
+    // strip ran on the lenient pass that accepted it.
+    write_skill(
+        root.path(),
+        ".tau/skills/quoted",
+        "---\nname: \"q\"\ndescription: it: works\n---\nBody.\n",
+    );
+    write_skill(
+        root.path(),
+        ".tau/skills/lone",
+        "---\nname: l\ndescription: \"\n---\nBody.\n",
+    );
+    let skills = discover(None, None, root.path());
+    let get = |n: &str| skills.iter().find(|s| s.name == n).unwrap();
+    assert_eq!(get("q").description, "it: works");
+    assert_eq!(get("l").description, "\"");
+}
+// The pair for the field reader's quote handling (audit Add6-B2 names the
+// positive load-bearing and the negative untested): a quoted field unquotes;
+// a value too short to be a quote pair is the value itself.
+#[test]
+fn a_quoted_field_value_is_stripped_to_its_contents() {
+    let root = tempfile::tempdir().unwrap();
+    write_skill(
+        root.path(),
+        ".tau/skills/s",
+        "---\nname: \"q\"\ndescription: it: works\n---\nBody.\n",
+    );
+    let skills = discover(None, None, root.path());
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "q");
+    // The bare colon is the strict pass's rejection and the lenient pass's
+    // case; the quoted name shows the quote strip ran on the same pass.
+    assert_eq!(skills[0].description, "it: works");
+}
+
+#[test]
+fn a_lone_quote_is_a_value_not_an_unfinished_pair() {
+    let root = tempfile::tempdir().unwrap();
+    let raw = String::from("---\nname: s\ndescription: ") + "\"" + "\n---\nBody.\n";
+    write_skill(root.path(), ".tau/skills/s", &raw);
+    let skills = discover(None, None, root.path());
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].description, "\"");
+}
 #[test]
 fn an_unquoted_colon_value_loads_via_the_quoted_retry() {
     let root = tempfile::tempdir().unwrap();

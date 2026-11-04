@@ -231,15 +231,15 @@ fn frontmatter_fields(raw: &str) -> Option<BTreeMap<String, String>> {
             !t.is_empty() && !t.starts_with('#') && !l.starts_with([' ', '\t'])
         })
         .collect();
-    match parse_fields(lines.clone(), false) {
+    match parse_fields(&lines, false) {
         Some(fields) => Some(fields),
-        None => parse_fields(lines, true),
+        None => parse_fields(&lines, true),
     }
 }
 
-fn parse_fields(lines: Vec<&str>, allow_colons: bool) -> Option<BTreeMap<String, String>> {
+fn parse_fields(lines: &[&str], allow_colons: bool) -> Option<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
-    for l in lines {
+    for &l in lines {
         let (k, v) = l.split_once(':')?;
         let v = v.trim();
         if !allow_colons && !v.starts_with(['"', '\'']) && v.contains(':') {
@@ -251,15 +251,12 @@ fn parse_fields(lines: Vec<&str>, allow_colons: bool) -> Option<BTreeMap<String,
 }
 
 fn unquote(v: &str) -> String {
-    if v.len() >= 2
-        && ((v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')))
-    {
-        v.get(1..v.len() - 1)
-            .expect("the quote check bounds the slice")
-            .to_owned()
-    } else {
-        v.to_owned()
+    for q in ['"', '\''] {
+        if let Some(inner) = v.strip_prefix(q).and_then(|t| t.strip_suffix(q)) {
+            return inner.to_owned();
+        }
     }
+    v.to_owned()
 }
 
 /// The body of a `SKILL.md`: everything after the closing `---`, trimmed.
