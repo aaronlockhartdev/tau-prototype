@@ -2,8 +2,8 @@
 //! batch-to-stale-dirs mapping, the dir listing, and the teardown.
 
 use super::{
-    Arc, Batch, Config, Core, Event, FileEntry, Path, ProviderInfo, SystemEventKind,
-    WATCH_DEBOUNCE, Watcher, Workspace, config, dispatch, mpsc, state::CoreError,
+    Arc, Batch, Config, Core, Event, FileEntry, GitCache, Path, ProviderInfo, SystemEventKind,
+    WATCH_DEBOUNCE, Watcher, Workspace, WorkspaceState, config, dispatch, mpsc, state::CoreError,
 };
 
 impl Core {
@@ -27,10 +27,9 @@ impl Core {
             watcher.add(root);
         }
         self.home_watcher.lock().replace(watcher);
-        let core = Arc::clone(self);
-        spawn_watcher_consumer(&core, rx, move |core, _batch| {
-            for ws in core.workspaces.lock().values() {
-                core.refresh_skills(ws);
+        spawn_watcher_consumer(self, rx, move |core, _batch| {
+            for ws in core.open_workspaces() {
+                core.refresh_skills(&ws);
             }
         })?;
         Ok(())
@@ -38,23 +37,23 @@ impl Core {
 
     /// The workspace's project roots (the `.tau/skills` + `.agents/skills`
     /// pair), watched from the first `open_workspace`; a batch re-discovers
-    /// that workspace. `workspace_close` drops the entry (the debouncer
-    /// stops on drop), so the map tracks the open workspaces. A missing
-    /// project dir has no roots to watch.
+    /// that workspace. The watcher is the workspace's own field, so the close
+    /// that drops the workspace stops the debouncer. A missing project dir has
+    /// no roots to watch.
     pub(crate) fn start_project_watcher(&self, workspace: &Workspace) -> Result<(), CoreError> {
         if !Path::new(&workspace.cwd).is_dir() {
             return Ok(());
         }
-        let mut map = self.project_watchers.lock();
-        if map.contains_key(&workspace.id) {
+        if self.watcher_started(&workspace.id, |state| state.project_watcher.is_some()) {
             return Ok(());
         }
         let (mut watcher, rx) = Watcher::new(WATCH_DEBOUNCE)?;
         let cwd = Path::new(&workspace.cwd);
         watcher.add(&cwd.join(".tau").join("skills"));
         watcher.add(&cwd.join(".agents").join("skills"));
-        map.insert(workspace.id.clone(), watcher);
-        drop(map);
+        self.park_watcher(&workspace.id, watcher, |state, watcher| {
+            state.project_watcher = Some(watcher);
+        });
         let Some(core) = self.self_arc() else {
             return Ok(());
         };
@@ -76,7 +75,7 @@ impl Core {
         };
         self.start_layer_watcher(
             dir,
-            move |core, watcher| {
+            |core, watcher| {
                 core.system_config_watcher.lock().replace(watcher);
             },
             |core| core.reload_system_config(),
@@ -84,11 +83,11 @@ impl Core {
     }
 
     /// The workspace's project config layer (`.tau/config.toml`, #337), started
-    /// from the first `open_workspace`. `workspace_close` drops the entry (the
-    /// debouncer stops on drop), so the map tracks the open workspaces.
+    /// from the first `open_workspace`. The watcher rides the workspace's state,
+    /// so the close that drops the workspace stops the debouncer.
     pub(crate) fn start_config_watcher(&self, workspace: &Workspace) -> Result<(), CoreError> {
         let project = Self::project_layer_dir(workspace);
-        if self.config_watchers.lock().contains_key(&workspace.id) {
+        if self.watcher_started(&workspace.id, |state| state.config_watcher.is_some()) {
             return Ok(());
         }
         let parked = workspace.id.clone();
@@ -96,7 +95,9 @@ impl Core {
         self.start_layer_watcher(
             &project,
             move |core, watcher| {
-                core.config_watchers.lock().insert(parked, watcher);
+                core.park_watcher(&parked, watcher, |state, watcher| {
+                    state.config_watcher = Some(watcher);
+                });
             },
             move |core| {
                 if let Ok(ws) = core.workspace(&id) {
@@ -133,6 +134,26 @@ impl Core {
         Ok(())
     }
 
+    /// A watcher this workspace's open already started answers the start: the
+    /// field is the record of what is watched, so the field says it.
+    fn watcher_started(&self, id: &str, started: impl Fn(&WorkspaceState) -> bool) -> bool {
+        self.workspaces.lock().get(id).is_some_and(started)
+    }
+
+    /// Park a watcher on the workspace it watches, so the close's one `remove`
+    /// stops it. A workspace that closed during the start drops the watcher here
+    /// (its `stop` runs) — its consumer's lookup then answers `None`.
+    fn park_watcher(
+        &self,
+        id: &str,
+        watcher: Watcher,
+        park: impl FnOnce(&mut WorkspaceState, Watcher),
+    ) {
+        if let Some(state) = self.workspaces.lock().get_mut(id) {
+            park(state, watcher);
+        }
+    }
+
     /// The system layer's reload (spec §12, #337): the swap lands only on a
     /// successful read, so a rejected edit leaves the last good config live and
     /// `ConfigRejected` is that failure's route to the GUI (ADR-0034: the event
@@ -143,7 +164,7 @@ impl Core {
     /// A failure marks every open workspace: each of their merges rides this
     /// layer, so the next boundary of each session meets the failure (#364).
     pub(crate) fn reload_system_config(&self) {
-        let workspaces: Vec<Workspace> = self.workspaces.lock().values().cloned().collect();
+        let workspaces: Vec<Workspace> = self.open_workspaces();
         let before: Vec<Vec<ProviderInfo>> =
             workspaces.iter().map(|ws| self.provider_rows(ws)).collect();
         let config = match self.read_system_config() {
@@ -255,31 +276,30 @@ impl Core {
     /// refetches the affected listed dirs, and any fetch is a fresh read, so
     /// a lost batch self-heals on the next expand.
     pub(crate) fn start_tree_watcher(&self, workspace: &Workspace) -> Result<(), CoreError> {
-        let cwd = Path::new(&workspace.cwd);
-        if !cwd.is_dir() {
+        if !Path::new(&workspace.cwd).is_dir() {
             return Ok(());
         }
-        let mut map = self.tree_watchers.lock();
-        if map.contains_key(&workspace.id) {
+        if self.watcher_started(&workspace.id, |state| state.tree_watcher.is_some()) {
             return Ok(());
         }
         let (watcher, rx) = Watcher::new(WATCH_DEBOUNCE)?;
-        map.insert(workspace.id.clone(), watcher);
-        drop(map);
+        self.park_watcher(&workspace.id, watcher, |state, watcher| {
+            state.tree_watcher = Some(watcher);
+        });
         let Some(core) = self.self_arc() else {
             return Ok(());
         };
         let id = workspace.id.clone();
         let cwd = workspace.cwd.clone();
         spawn_watcher_consumer(&core, rx, move |core, batch| {
-            let Some(ws) = core.workspaces.lock().get(&id).cloned() else {
-                return;
-            };
+            let Ok(ws) = core.workspace(&id) else { return };
             let changed = tree_changed_dirs(&cwd, &batch);
             if !changed.is_empty() {
                 // A tree change invalidates the git snapshot: the next
                 // listing (or numstat) rebuilds it.
-                core.git_snapshots.lock().remove(&id);
+                if let Some(state) = core.workspaces.lock().get_mut(&id) {
+                    state.git = GitCache::Uncomputed;
+                }
                 core.emit(Event::FileTreeChanged {
                     workspace: ws.id,
                     changed,
@@ -292,29 +312,27 @@ impl Core {
     /// The workspace's plan watcher (design: the plan file is the source
     /// of truth): the `.tau/plans` root, started from the first
     /// `open_workspace`; a batch re-reads the changed plan files into the
-    /// core's state cache. `workspace_close` drops the entry (the
-    /// debouncer stops on drop), so the map tracks the open workspaces.
+    /// cache. The watcher rides the workspace's state, so the close that drops
+    /// the workspace stops the debouncer.
     pub(crate) fn start_plan_watcher(&self, workspace: &Workspace) -> Result<(), CoreError> {
         let cwd = Path::new(&workspace.cwd);
         if !cwd.is_dir() {
             return Ok(());
         }
-        let mut map = self.plan_watchers.lock();
-        if map.contains_key(&workspace.id) {
+        if self.watcher_started(&workspace.id, |state| state.plan_watcher.is_some()) {
             return Ok(());
         }
         let (mut watcher, rx) = Watcher::new(WATCH_DEBOUNCE)?;
         watcher.add(&cwd.join(".tau").join("plans"));
-        map.insert(workspace.id.clone(), watcher);
-        drop(map);
+        self.park_watcher(&workspace.id, watcher, |state, watcher| {
+            state.plan_watcher = Some(watcher);
+        });
         let Some(core) = self.self_arc() else {
             return Ok(());
         };
         let id = workspace.id.clone();
         spawn_watcher_consumer(&core, rx, move |core, batch| {
-            let Some(ws) = core.workspaces.lock().get(&id).cloned() else {
-                return;
-            };
+            let Ok(ws) = core.workspace(&id) else { return };
             refresh_plan_batch(&core, &ws, &batch);
         })?;
         Ok(())
@@ -324,18 +342,29 @@ impl Core {
     /// #115): a `file_list` means the pane is showing the dir, so watch it.
     /// No-op if the workspace has no tree watcher yet.
     pub(crate) fn watch_tree_dir(&self, workspace: &Workspace, dir: &Path) {
-        let mut map = self.tree_watchers.lock();
-        if let Some(watcher) = map.get_mut(&workspace.id) {
-            watcher.watch_path(dir);
-        }
+        self.drive_tree_watcher(workspace, dir, Watcher::watch_path);
     }
 
     /// Drop a dir from the workspace's tree watcher (visibility-driven,
     /// #115): a `file_unlist` means the pane collapsed the dir.
     pub(crate) fn unwatch_tree_dir(&self, workspace: &Workspace, dir: &Path) {
-        let mut map = self.tree_watchers.lock();
-        if let Some(watcher) = map.get_mut(&workspace.id) {
-            watcher.unwatch_path(dir);
+        self.drive_tree_watcher(workspace, dir, Watcher::unwatch_path);
+    }
+
+    /// The pane's expand/collapse door onto the workspace's tree watcher.
+    fn drive_tree_watcher(
+        &self,
+        workspace: &Workspace,
+        dir: &Path,
+        drive: impl FnOnce(&mut Watcher, &Path),
+    ) {
+        if let Some(watcher) = &mut self
+            .workspaces
+            .lock()
+            .get_mut(&workspace.id)
+            .and_then(|state| state.tree_watcher.as_mut())
+        {
+            drive(watcher, dir);
         }
     }
 }
@@ -420,10 +449,9 @@ impl Drop for Core {
     fn drop(&mut self) {
         self.home_watcher.lock().take();
         self.system_config_watcher.lock().take();
-        self.project_watchers.lock().clear();
-        self.config_watchers.lock().clear();
-        self.tree_watchers.lock().clear();
-        self.plan_watchers.lock().clear();
+        // One clear stops every workspace's watchers: each is a field of the
+        // workspace's state, and a `Watcher`'s drop joins its debouncer.
+        self.workspaces.lock().clear();
         self.plans.lock().clear();
     }
 }

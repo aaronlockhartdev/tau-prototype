@@ -237,18 +237,13 @@ impl Core {
                 // it can be resumed (a restart drops the in-memory live
                 // map); if no known workspace owns it, serve read-only.
                 } else {
-                    let ws = self
-                        .workspaces
-                        .lock()
-                        .values()
-                        .find(|w| {
-                            Path::new(&w.cwd)
-                                .join(".tau")
-                                .join("sessions")
-                                .join(format!("{session}.jsonl"))
-                                .exists()
-                        })
-                        .cloned();
+                    let ws = self.find_workspace(|w| {
+                        Path::new(&w.cwd)
+                            .join(".tau")
+                            .join("sessions")
+                            .join(format!("{session}.jsonl"))
+                            .exists()
+                    });
                     if let Some(ws) = ws
                         && let Ok(_meta) = self.session_reopen(&ws, &session)
                         && let Ok(live) = self.live(&session)

@@ -152,19 +152,15 @@ impl Core {
     pub(super) fn archive_closed(&self, session: &str) -> Result<CommandOutput, ProtocolError> {
         // The GUI archives from an open workspace's tree: find the
         // workspace whose live directory holds the file.
-        let workspace = {
-            let wss = self.workspaces.lock();
-            wss.values()
-                .find(|w| {
-                    SessionStore::for_workspace(Path::new(&w.cwd), session)
-                        .path()
-                        .exists()
-                })
-                .cloned()
-        }
-        .ok_or_else(|| ProtocolError::NotFound {
-            what: format!("session {session} is not open"),
-        })?;
+        let workspace = self
+            .find_workspace(|w| {
+                SessionStore::for_workspace(Path::new(&w.cwd), session)
+                    .path()
+                    .exists()
+            })
+            .ok_or_else(|| ProtocolError::NotFound {
+                what: format!("session {session} is not open"),
+            })?;
         let cwd = PathBuf::from(&workspace.cwd);
         let mut store = SessionStore::for_workspace(&cwd, session);
         store.open().map_err(|e| ProtocolError::Other {
@@ -229,18 +225,14 @@ impl Core {
     pub(super) fn delete_closed(&self, session: &str) -> Result<CommandOutput, ProtocolError> {
         // The GUI deletes from an open workspace's tree: find the workspace
         // whose dir holds the file, live or archived.
-        let workspace = {
-            let wss = self.workspaces.lock();
-            wss.values()
-                .find(|w| {
-                    let s = SessionStore::for_workspace(Path::new(&w.cwd), session);
-                    s.path().exists() || s.archive_path().exists()
-                })
-                .cloned()
-        }
-        .ok_or_else(|| ProtocolError::NotFound {
-            what: format!("session {session} is not open"),
-        })?;
+        let workspace = self
+            .find_workspace(|w| {
+                let s = SessionStore::for_workspace(Path::new(&w.cwd), session);
+                s.path().exists() || s.archive_path().exists()
+            })
+            .ok_or_else(|| ProtocolError::NotFound {
+                what: format!("session {session} is not open"),
+            })?;
         let cwd = PathBuf::from(&workspace.cwd);
         // The workspace's disk scan is the whole truth here (no supervisor in
         // memory): BFS the parent links to collect the target and all

@@ -4,7 +4,7 @@ use super::{
     AgentSession, Arc, AtomicBool, AtomicU64, BTreeMap, ChildProviderFactory, Config, Duration,
     Event, ForwardingProvider, HashMap, Lane, MessageLane, Mutex, Ordering, Path, PathBuf,
     ProtocolError, SessionMeta, Skeleton, SkillInfo, SystemEventKind, TurnProviderRef, Watcher,
-    Weak, Workspace, config, mpsc,
+    Weak, Workspace, config, mpsc, skill_info,
 };
 
 /// The watcher's debounce window (design #30): a save burst (a temp-write
@@ -32,6 +32,7 @@ pub(crate) struct ConfigRejection {
     pub(crate) path: String,
     pub(crate) reason: String,
 }
+
 /// A live session: the loop plus the binding's view of its lanes, the
 /// stop flag, and the provider (kept here so a turn can be diffed against
 /// the calls it started). The GUI's queue is not held here: it is a
@@ -53,11 +54,66 @@ pub(crate) struct LiveSession {
     pub(crate) skeleton: Mutex<Skeleton>,
 }
 
-/// The core's owned state: workspaces (identity, never paths) and the live
-/// sessions. Everything the GUI can show is derivable from here + the
-/// session files (ADR-0006 state ownership).
+/// One open workspace and everything that travels with it (#1A): a fact about a
+/// workspace lives here, so `close_workspace`'s one `remove` is the whole
+/// teardown — nothing of a closed workspace survives, and `Drop`'s one `clear`
+/// stops every watcher (a `Watcher` stops on drop).
+pub(crate) struct WorkspaceState {
+    pub(crate) workspace: Workspace,
+    /// The `.tau/skills` + `.agents/skills` roots (#31).
+    pub(crate) project_watcher: Option<Watcher>,
+    /// The `.tau` config layer (#337).
+    pub(crate) config_watcher: Option<Watcher>,
+    /// The files pane's watcher, on the dirs the pane expanded (#32/#115).
+    pub(crate) tree_watcher: Option<Watcher>,
+    /// The `.tau/plans` root.
+    pub(crate) plan_watcher: Option<Watcher>,
+    /// The discovered skill registry, refreshed by the watchers (#28/#31).
+    pub(crate) skills: Option<Vec<SkillInfo>>,
+    pub(crate) git: GitCache,
+}
+
+/// A workspace's git snapshot (file-tree plan, phase 2): `NotGit` is the cached
+/// negative, so a non-git workspace pays three spawns once, not three a listing;
+/// `Uncomputed` is what a tree change returns the cache to.
+#[derive(Clone, Default)]
+pub(crate) enum GitCache {
+    #[default]
+    Uncomputed,
+    NotGit,
+    Snapshot(Box<super::git::GitSnapshot>),
+}
+
+impl GitCache {
+    /// What a listing's fresh answer leaves behind: the snapshot, or the cached
+    /// negative where the spawn failed (the next listing reads, no spawns).
+    pub(crate) fn from_snapshot(snap: Option<super::git::GitSnapshot>) -> Self {
+        match snap {
+            Some(snap) => GitCache::Snapshot(Box::new(snap)),
+            None => GitCache::NotGit,
+        }
+    }
+}
+
+impl WorkspaceState {
+    fn new(workspace: Workspace) -> Self {
+        Self {
+            workspace,
+            project_watcher: None,
+            config_watcher: None,
+            tree_watcher: None,
+            plan_watcher: None,
+            skills: None,
+            git: GitCache::Uncomputed,
+        }
+    }
+}
+
+/// The core's owned state: the open workspaces with the state that travels with
+/// each, and the live sessions. Everything the GUI can show is derivable from
+/// here + the session files (ADR-0006 state ownership).
 pub struct Core {
-    pub(crate) workspaces: Mutex<BTreeMap<String, Workspace>>,
+    pub(crate) workspaces: Mutex<BTreeMap<String, WorkspaceState>>,
     pub(crate) sessions: Mutex<HashMap<String, Arc<LiveSession>>>,
     pub(crate) configs: Mutex<HashMap<String, Config>>,
     /// A workspace whose project layer stopped reading, keyed to what the loader
@@ -67,10 +123,6 @@ pub struct Core {
     /// it describes — the watcher's reload, a system reload's drop, a read that
     /// reads — clears it.
     pub(crate) config_stale: Mutex<HashMap<String, ConfigRejection>>,
-    /// Per-workspace skill registry (tickets #28/#31): built at session
-    /// open and refreshed by the file watcher; consulted by the
-    /// `message_send` boundary and `skill_list`.
-    pub(crate) skills: Mutex<HashMap<String, Vec<SkillInfo>>>,
     /// The home-level skill roots (`{system}/skills` + `{home}/.agents/skills`),
     /// watched once globally (ticket #31): identical for every workspace, so
     /// one watcher re-discovers all open workspaces. A `None` seam (the test
@@ -81,33 +133,11 @@ pub struct Core {
     /// it for all. Watched non-recursively — the dir's other files
     /// (`workspaces.json`, `agents`, `skills`) are not config.
     pub(crate) system_config_watcher: Mutex<Option<Watcher>>,
-    /// The per-workspace config watchers (the `.tau` layer, #337): a batch
-    /// naming `config.toml` reloads that workspace's cache entry.
-    /// `workspace_close` drops the entry (the debouncer stops on drop), so the
-    /// map tracks the open workspaces.
-    pub(crate) config_watchers: Mutex<HashMap<String, Watcher>>,
-    /// The per-workspace project roots (the `.tau/skills` + `.agents/skills`
-    /// pair), created at the first `open_workspace`; a batch re-discovers
-    /// that workspace. `workspace_close` drops the entry (the debouncer
-    /// stops on drop), so the map tracks the open workspaces.
-    pub(crate) project_watchers: Mutex<HashMap<String, Watcher>>,
-    /// The per-workspace tree watcher (the files pane, ticket #32): the
-    /// second consumer of the shared `Watcher` plumbing, visibility-driven
-    /// (it watches the dirs the pane has expanded, #115).
-    pub(crate) tree_watchers: Mutex<HashMap<String, Watcher>>,
     /// The watcher-parsed plan state per session (design: the plan file is
     /// the source of truth; this is its parse, kept fresh by the
     /// per-workspace plan watcher). Dropped on session close — the file on
     /// disk is the record, the cache is not.
     pub(crate) plans: Mutex<HashMap<String, crate::plan::Plan>>,
-    /// The per-workspace plan watcher (the `.tau/plans` root): a batch
-    /// re-reads the changed plan files into the state cache.
-    pub(crate) plan_watchers: Mutex<HashMap<String, Watcher>>,
-    /// The per-workspace git snapshot cache (file-tree plan, phase 2): one
-    /// entry per open workspace, `None` = not a git repo (negative results
-    /// cached too, so a non-git workspace costs three spawns, not three per
-    /// listing). Invalidated on `file_tree_changed` and workspace close.
-    pub(crate) git_snapshots: Mutex<HashMap<String, Option<super::git::GitSnapshot>>>,
     pub(crate) system_dir: Option<PathBuf>,
     /// The user's home dir (the home-level `.agents/skills/` root; the
     /// `system_dir` seam's sibling for tests).
@@ -251,15 +281,9 @@ impl CoreBuilder {
             sessions: Mutex::new(HashMap::new()),
             configs: Mutex::new(HashMap::new()),
             config_stale: Mutex::new(HashMap::new()),
-            skills: Mutex::new(HashMap::new()),
             home_watcher: Mutex::new(None),
             system_config_watcher: Mutex::new(None),
-            config_watchers: Mutex::new(HashMap::new()),
-            project_watchers: Mutex::new(HashMap::new()),
-            tree_watchers: Mutex::new(HashMap::new()),
             plans: Mutex::new(HashMap::new()),
-            plan_watchers: Mutex::new(HashMap::new()),
-            git_snapshots: Mutex::new(HashMap::new()),
             system_dir: self.system_dir.clone(),
             home: self.home.clone(),
             custom: self.custom,
@@ -321,12 +345,15 @@ impl CoreBuilder {
         // demand); a closed workspace (B7) stays closed across the restart.
         for e in core.load_workspace_index() {
             if e.open && Path::new(&e.cwd).is_dir() {
-                let w = Workspace {
+                let state = WorkspaceState::new(Workspace {
                     id: e.id,
                     name: e.name,
                     cwd: e.cwd,
-                };
-                core.workspaces.lock().entry(w.id.clone()).or_insert(w);
+                });
+                core.workspaces
+                    .lock()
+                    .entry(state.workspace.id.clone())
+                    .or_insert(state);
             }
         }
         // The home-level roots are watched once globally (ticket #31); a
@@ -492,7 +519,7 @@ impl Core {
         self.configs.lock().get("").cloned().unwrap_or_default()
     }
 
-    pub(crate) fn open_workspace(&self, cwd: &str) -> Result<Workspace, ProtocolError> {
+    pub(crate) fn open_workspace(self: &Arc<Self>, cwd: &str) -> Result<Workspace, ProtocolError> {
         let cwd = cwd.trim().to_owned();
         let id = format!("w-{:x}", xxhash_rust::xxh3::xxh3_64(cwd.as_bytes()));
         let name = Path::new(&cwd)
@@ -505,7 +532,7 @@ impl Core {
         self.workspaces
             .lock()
             .entry(workspace.id.clone())
-            .or_insert_with(|| workspace.clone());
+            .or_insert_with(|| WorkspaceState::new(workspace.clone()));
         self.emit(Event::System {
             workspace: workspace.id.clone(),
             session: None,
@@ -531,17 +558,98 @@ impl Core {
         self.workspaces
             .lock()
             .get(id)
-            .cloned()
+            .map(|state| state.workspace.clone())
             .ok_or_else(|| ProtocolError::NotFound {
                 what: format!("workspace {id} is not open"),
             })
     }
 
-    /// The workspace's skill registry (ticket #28): the per-workspace
-    /// cache; a workspace with no session opened yet is discovered on
-    /// demand (`skill_list` at workspace open). The watcher refreshes the
-    /// slot between opens (ticket #31), so a stale list never outlives a
-    /// change.
+    /// Every open workspace's identity: the fan-out reads that walk all of them
+    /// (the home watcher's batch, a system layer's reload, the archive's and
+    /// delete's disk scans for a closed session).
+    pub(crate) fn open_workspaces(&self) -> Vec<Workspace> {
+        self.workspaces
+            .lock()
+            .values()
+            .map(|state| state.workspace.clone())
+            .collect()
+    }
+
+    /// The open workspace `test` picks out of the live set (the archive and
+    /// delete paths find a closed session by the file on disk under its cwd).
+    pub(crate) fn find_workspace(&self, test: impl Fn(&Workspace) -> bool) -> Option<Workspace> {
+        self.open_workspaces().into_iter().find(|w| test(w))
+    }
+
+    /// The workspace's skill registry, read from its own state (#28): discovered
+    /// outlives a change. The one read site, so the cache cannot be missed on the
+    /// way in. Discovery runs with `workspaces` free — a first read walks the
+    /// skill dirs, and a workspace list should not queue behind it. A workspace
+    /// with no state (the cwd closed under this lookup) answers from the files:
+    /// the cache is the optimization, discovery is the record.
+    pub(crate) fn skills_of(&self, ws: &Workspace) -> Vec<SkillInfo> {
+        if let Some(reg) = self
+            .workspaces
+            .lock()
+            .get(&ws.id)
+            .and_then(|state| state.skills.clone())
+        {
+            return reg;
+        }
+        let reg = self.discover_skills(ws);
+        if let Some(state) = self.workspaces.lock().get_mut(&ws.id) {
+            state.skills = Some(reg.clone());
+        }
+        reg
+    }
+    /// What the workspace's files describe as protocol rows: the discovery the
+    /// cache slot is filled with.
+    fn discover_skills(&self, ws: &Workspace) -> Vec<SkillInfo> {
+        crate::skills::discover(
+            self.system_dir.as_deref(),
+            self.home.as_deref(),
+            Path::new(&ws.cwd),
+        )
+        .iter()
+        .map(skill_info)
+        .collect()
+    }
+
+    /// Re-run discovery, replace the workspace's registry slot, and emit the
+    /// full-state `SkillListChanged` (#31 — idempotent by construction, a lost
+    /// batch self-heals on the next `skill_list`). Shared by the watchers and
+    /// `build_live`: the slot is the one the dropdown and the `/skill:` lookup
+    /// read. A running session's prompt is not touched (frozen at build); new
+    /// sessions pick up the change at their own build. Returns the `Skill`s, not
+    /// the rows: launch's prompt catalog reads the bodies the rows drop.
+    pub(crate) fn refresh_skills(&self, ws: &Workspace) -> Vec<crate::skills::Skill> {
+        let skills = crate::skills::discover(
+            self.system_dir.as_deref(),
+            self.home.as_deref(),
+            Path::new(&ws.cwd),
+        );
+        let reg: Vec<SkillInfo> = skills.iter().map(skill_info).collect();
+        if let Some(state) = self.workspaces.lock().get_mut(&ws.id) {
+            state.skills = Some(reg.clone());
+        }
+        self.emit(Event::SkillListChanged {
+            workspace: ws.id.clone(),
+            skills: reg,
+        });
+        skills
+    }
+
+    /// The open workspace whose cwd is `path` (the plan event's routing);
+    /// `None` when the cwd names no open workspace (a close racing the
+    /// watcher) — the parse is cached either way.
+    fn workspace_id_for_cwd(&self, cwd: &Path) -> Option<String> {
+        self.workspaces
+            .lock()
+            .values()
+            .find(|state| Path::new(&state.workspace.cwd) == cwd)
+            .map(|state| state.workspace.id.clone())
+    }
+
     fn load_workspace_index(&self) -> Vec<WorkspaceIndexEntry> {
         let Some(dir) = &self.system_dir else {
             return Vec::new();
@@ -588,24 +696,16 @@ impl Core {
         self.save_workspace_index(&entries);
     }
 
-    /// Close (archive) a workspace (B7): persist its `open` flag as closed,
-    /// then drop it from the live set — a `workspace_list` that still
-    /// carried it would resurrect the just-closed tab on the next sync —
-    /// and stop its watchers. The sessions stay on disk; the workspace
-    /// re-opens.
+    /// Close (archive) a workspace (B7): persist its `open` flag as closed, then
+    /// drop its state — the live entry, its watchers, and its caches are one
+    /// thing, and a `workspace_list` that still carried it would resurrect the
+    /// just-closed tab on the next sync. The sessions stay on disk; the workspace
+    /// re-opens. The config entry goes on the same rule: a reopen of the same cwd
+    /// meets the files as they are, not as the last session left them (#359).
     pub(crate) fn close_workspace(&self, id: &str) -> Result<(), ProtocolError> {
         let w = self.workspace(id)?;
         self.set_workspace_open(&w, false);
         self.workspaces.lock().remove(id);
-        self.project_watchers.lock().remove(id);
-        self.config_watchers.lock().remove(id);
-        self.tree_watchers.lock().remove(id);
-        self.plan_watchers.lock().remove(id);
-        self.git_snapshots.lock().remove(id);
-        // The merged entry and its staleness mark go with the workspace: a reopen
-        // of the same cwd must meet the files as they are, not as the last session
-        // left them — a layer repaired while the workspace was closed is live, not
-        // filed under a failure it no longer has (#359).
         self.configs.lock().remove(id);
         self.config_stale.lock().remove(id);
         Ok(())
@@ -655,17 +755,6 @@ impl Core {
                 plan: plan.into(),
             });
         }
-    }
-
-    /// The open workspace whose cwd is `path` (the plan event's routing);
-    /// `None` when the cwd names no open workspace (a close racing the
-    /// watcher) — the parse is cached either way.
-    fn workspace_id_for_cwd(&self, cwd: &Path) -> Option<String> {
-        self.workspaces
-            .lock()
-            .values()
-            .find(|w| Path::new(&w.cwd) == cwd)
-            .map(|w| w.id.clone())
     }
 
     /// The project layer's directory: where a workspace's own config file lives.

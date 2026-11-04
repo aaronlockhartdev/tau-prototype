@@ -6,6 +6,62 @@ use super::*;
 
 use crate::harness::testkit::*;
 
+/// A skill fixture under `cwd`, so the workspace has a registry to cache.
+fn write_skill(cwd: &Path, name: &str) {
+    let dir = cwd.join(".tau/skills").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: the {name} skill\n---\nBody.\n"),
+    )
+    .unwrap();
+}
+
+/// A closed workspace keeps no state of its own: the workspace's watchers and
+/// its caches are one thing with the workspace, so the close that drops it drops
+/// them with it. A skill the workspace added while closed is live at the reopen —
+/// the same rule #359 states for the config layer: a reopen of the same cwd
+/// meets the files as they are, not as the closed workspace left them (#1A).
+#[tokio::test]
+async fn a_closed_workspace_reopens_with_the_files_as_they_are() {
+    let cwd = tempfile::tempdir().unwrap();
+    write_skill(cwd.path(), "closed-before");
+    let core = CoreBuilder::custom(providers()).build().unwrap();
+    let w = open_ws(&core, cwd.path()).await;
+    assert_eq!(
+        list_skills(&core, &w.id),
+        vec!["closed-before"],
+        "the open workspace discovers its skill"
+    );
+    core.dispatch(Command::WorkspaceClose { workspace: w.id })
+        .unwrap();
+    write_skill(cwd.path(), "added-while-closed");
+
+    let again = open_ws(&core, cwd.path()).await;
+    assert_eq!(
+        list_skills(&core, &again.id),
+        vec!["added-while-closed", "closed-before"],
+        "the reopen discovers the files as they are: the closed workspace's \
+         cached registry is what is left behind"
+    );
+}
+
+fn list_skills(core: &Arc<Core>, workspace: &str) -> Vec<String> {
+    match core
+        .dispatch(Command::SkillList {
+            workspace: workspace.to_owned(),
+        })
+        .unwrap()
+    {
+        CommandOutput::Skills { skills } => {
+            let mut names: Vec<String> = skills.into_iter().map(|s| s.name).collect();
+            names.sort();
+            names
+        }
+        other => panic!("expected skills: {other:?}"),
+    }
+}
+
 fn index(sys: &Path) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(sys.join("workspaces.json")).unwrap()).unwrap()
 }

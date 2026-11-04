@@ -3,8 +3,8 @@
 //! The arms are grouped per domain in their own files; the entry routes.
 
 use super::{
-    Arc, BufRead, Command, CommandOutput, Config, Core, FileText, Path, PathBuf, ProtocolError,
-    ProviderInfo, Workspace, list_dir,
+    Arc, BufRead, Command, CommandOutput, Config, Core, FileText, GitCache, Path, PathBuf,
+    ProtocolError, ProviderInfo, Workspace, list_dir,
 };
 
 fn resolve_path(cwd: &str, path: &str) -> PathBuf {
@@ -77,18 +77,27 @@ pub(crate) fn provider_rows(config: &Config) -> Vec<ProviderInfo> {
     providers.sort_by(|a, b| a.name.cmp(&b.name));
     providers
 }
-
 impl Core {
-    /// The workspace's cached git snapshot (file-tree plan, phase 2): a
-    /// cache hit is a map read; a miss runs the three-spawn snapshot once
-    /// and stores the result — including `None` for non-git workspaces.
+    /// The workspace's git snapshot (file-tree plan, phase 2), read from the
+    /// workspace's own cache: a computed entry answers it (the cached `NotGit`
+    /// included), a miss runs the three spawns once and stores the answer. The
+    /// two lock scopes are the point — the spawns run with `workspaces` free, so
+    /// a listing's snapshot cannot block a workspace list.
     fn git_snapshot(&self, workspace: &Workspace) -> Option<super::git::GitSnapshot> {
-        let mut cache = self.git_snapshots.lock();
-        if let Some(v) = cache.get(&workspace.id) {
-            return v.clone();
+        let cached = self
+            .workspaces
+            .lock()
+            .get(&workspace.id)
+            .map(|state| state.git.clone());
+        match cached {
+            Some(GitCache::Snapshot(snap)) => return Some(*snap),
+            Some(GitCache::NotGit) => return None,
+            Some(GitCache::Uncomputed) | None => {}
         }
         let fresh = super::git::git_snapshot(Path::new(&workspace.cwd)).ok();
-        cache.insert(workspace.id.clone(), fresh.clone());
+        if let Some(state) = self.workspaces.lock().get_mut(&workspace.id) {
+            state.git = GitCache::from_snapshot(fresh.clone());
+        }
         fresh
     }
 
@@ -137,7 +146,7 @@ impl Core {
                 workspace: self.open_workspace(&cwd)?,
             }),
             Command::WorkspaceList => Ok(CommandOutput::Workspaces {
-                workspaces: self.workspaces.lock().values().cloned().collect(),
+                workspaces: self.open_workspaces(),
             }),
             Command::WorkspaceClose { workspace } => {
                 self.close_workspace(&workspace)?;

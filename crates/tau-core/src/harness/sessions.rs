@@ -2,10 +2,10 @@
 
 use super::thinking::thinking_adjusted_max_output;
 use super::{
-    AgentSession, Arc, AtomicBool, Config, Core, Event, ForwardingProvider, LiveSession,
-    MAX_TITLE_LEN, ModelAddress, Mutex, Ordering, Path, PathBuf, ProtocolError, SessionMeta,
-    SessionRole, SessionStore, Skeleton, SkillInfo, TurnConfig, Value, ViewEntry, Workspace,
-    om_route_for, session_inner, session_name, session_open, skill_info, unique_name,
+    AgentSession, Arc, AtomicBool, Config, Core, ForwardingProvider, LiveSession, MAX_TITLE_LEN,
+    ModelAddress, Mutex, Ordering, Path, PathBuf, ProtocolError, SessionMeta, SessionRole,
+    SessionStore, Skeleton, TurnConfig, Value, ViewEntry, Workspace, om_route_for, session_inner,
+    session_name, session_open, unique_name,
 };
 use crate::agent::OmRoute;
 use crate::config::{ProviderRef, Route};
@@ -25,40 +25,6 @@ impl Core {
             return OmRoute::Session;
         }
         om_route_for(&self.client, config, om_model, current)
-    }
-    /// The workspace's skill registry (ticket #28): the per-workspace
-    /// cache; a workspace with no session opened yet is discovered on
-    /// demand (`skill_list` at workspace open). The watcher refreshes the
-    /// slot between opens (ticket #31), so a stale list never outlives a
-    /// change.
-    pub(crate) fn skills_of(&self, ws: &Workspace) -> Vec<SkillInfo> {
-        if let Some(reg) = self.skills.lock().get(&ws.id) {
-            return reg.clone();
-        }
-        self.refresh_skills(ws);
-        self.skills.lock().get(&ws.id).cloned().unwrap_or_default()
-    }
-
-    /// Re-run discovery for `ws`, replace its registry slot, and emit the
-    /// full-state `SkillListChanged` (ticket #31 — idempotent by
-    /// construction, a lost batch self-heals on
-    /// the next `skill_list`). Shared by the watcher's consumer and
-    /// `build_live`: the slot is the one the dropdown and the `/skill:`
-    /// lookup read. A running session's prompt is not touched (frozen at
-    /// build); new sessions pick up the change at their own build.
-    pub(crate) fn refresh_skills(&self, ws: &Workspace) -> Vec<crate::skills::Skill> {
-        let skills = crate::skills::discover(
-            self.system_dir.as_deref(),
-            self.home.as_deref(),
-            Path::new(&ws.cwd),
-        );
-        let reg: Vec<SkillInfo> = skills.iter().map(skill_info).collect();
-        self.skills.lock().insert(ws.id.clone(), reg.clone());
-        self.emit(Event::SkillListChanged {
-            workspace: ws.id.clone(),
-            skills: reg,
-        });
-        skills
     }
 
     /// A leading `/skill:<name> [args]` expands at the `message_send`
@@ -117,11 +83,11 @@ impl Core {
     /// The (workspace, session-meta) pair owning a non-archived session,
     /// scanning every open workspace — the one home for that lookup.
     pub(crate) fn owning_session(&self, id: &str) -> Option<(Workspace, SessionMeta)> {
-        self.workspaces.lock().values().find_map(|w| {
-            Self::session_access(w)
+        self.open_workspaces().into_iter().find_map(|w| {
+            Self::session_access(&w)
                 .into_iter()
                 .find(|m| m.id == id && !m.archived)
-                .map(|m| (w.clone(), m))
+                .map(|m| (w, m))
         })
     }
 
