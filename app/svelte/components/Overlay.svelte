@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { Snippet } from 'svelte';
 
   let {
@@ -16,6 +17,17 @@
     onClose: () => void;
     children: Snippet;
   } = $props();
+
+  // An overlay is mounted only while it is open, so Escape here is the
+  // overlay's own dismissal (the palette, sheet, fleet and model menu share
+  // it). App's keydown chain closes the same flags; closing twice is a no-op.
+  onMount(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 </script>
 
 <div class="dim" role="presentation" style:z-index={z} onclick={onClose}></div>

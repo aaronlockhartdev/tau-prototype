@@ -52,9 +52,16 @@ beforeEach(() => {
   mockStore.sessions = { s1: seedState(meta('s1', 'dev/qwen3.8')) };
   mockStore.current = 's1';
   mockStore.providers = { [WS.id]: PROVIDERS };
+  mockStore.modelMenuOpen = true;
 });
 
 describe('ModelMenu', () => {
+  it('renders nothing while the menu is closed', () => {
+    mockStore.modelMenuOpen = false;
+    render(ModelMenu);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('renders the store rows grouped by provider and opens with a fresh read', async () => {
     render(ModelMenu);
     expect(await screen.findByText('openrouter')).toBeInTheDocument();
@@ -88,7 +95,7 @@ describe('ModelMenu', () => {
   it('a scrim click closes the menu', async () => {
     render(ModelMenu);
     await screen.findByText('openrouter');
-    await fireEvent.click(document.querySelector('.scrim')!);
+    await fireEvent.click(document.querySelector('.dim')!);
     expect(mockStore.modelMenuOpen).toBe(false);
   });
 

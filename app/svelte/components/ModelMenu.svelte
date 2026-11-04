@@ -3,7 +3,8 @@
   // center column (the v4/v5 answer — one convention for all floating
   // menus), models grouped by provider (the workspace's provider rows), the
   // current model dot-highlighted. The composer's model chip and the
-  // /model command both open it.
+  // /model command both open it. The scrim, the dialog role, and the Escape
+  // key ride the shared Overlay, like the palette, the sheet and the fleet.
   //
   // The rows are the store's (#337), not a local first-open cache: the core
   // reads its config layers on every `provider_list` and emits
@@ -12,6 +13,7 @@
   import { onMount } from 'svelte';
   import type { ProviderInfo } from '../lib/wire/protocol';
   import { store, setModel, currentSession, fetchProviders } from '../lib/store/store.svelte';
+  import Overlay from './Overlay.svelte';
 
   let error = $state<string | null>(null);
 
@@ -29,12 +31,7 @@
     close();
   }
 
-  function onKey(e: KeyboardEvent): void {
-    if (e.key === 'Escape') close();
-  }
-
   onMount(() => {
-    window.addEventListener('keydown', onKey);
     // Opening is a fresh read: the core serves the rows from the current
     // files, so a menu never shows a provider the config no longer has.
     if (ws) {
@@ -42,20 +39,11 @@
         error = e instanceof Error ? e.message : String(e);
       });
     }
-    return () => window.removeEventListener('keydown', onKey);
   });
 </script>
 
-<div
-  class="scrim"
-  role="presentation"
-  tabindex="-1"
-  onclick={close}
-  onkeydown={(e) => {
-    if (e.key === 'Escape' || e.key === 'Enter') close();
-  }}
-></div>
-<div class="mmenu" role="menu">
+{#if store.modelMenuOpen}
+  <Overlay label="Model" panel="mmenu" z={30} onClose={close}>
   <div class="mh">model <span class="esc">esc to dismiss</span></div>
   {#if error}
     <div class="merr">{error}</div>
@@ -86,27 +74,17 @@
       </div>
     {/each}
   {/if}
-</div>
+  </Overlay>
+{/if}
 
 <style>
-  .scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 30;
-    background: rgba(0, 0, 0, 0.35);
-  }
-  .mmenu {
-    position: absolute;
-    left: 50%;
+  :global(.mmenu) {
     top: 50%;
+    left: 50%;
     transform: translate(-50%, -50%);
-    z-index: 40;
     width: 340px;
     overflow: hidden;
     background: var(--panel2);
-    border: 1px solid var(--line2);
-    border-radius: 12px;
-    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
   }
   .mh {
     padding: 9px 14px 7px;
