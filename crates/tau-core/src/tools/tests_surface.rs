@@ -341,3 +341,40 @@ async fn a_refused_write_leaves_the_served_baseline_live() {
         "the refused write left the baseline alone"
     );
 }
+// The tool schema declares `command` required (tools.rs's `required:
+// ["command"]`), and the foreground path enforces it. The background branch
+// parsed it a second time with unwrap_or(""), so `{"background": true}` with
+// no command spawned `bash -c ''`: a job that exits 0, reported as started
+// (audit Add5-T3).
+#[tokio::test]
+async fn a_background_bash_without_a_command_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_parent, _sup, child) = parent_child(dir.path());
+    let cwd = dir.path().to_path_buf();
+
+    let call = ToolCall {
+        id: "c1".into(),
+        name: "bash".into(),
+        args: serde_json::json!({ "background": true }),
+    };
+    let out = surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &call).await;
+    assert!(!out.ok, "no command: refused, not an empty job");
+    assert_eq!(text(out), "bash: missing \"command\"");
+    assert!(!child.background_jobs().has_live(), "nothing was spawned");
+}
+
+/// The positive: the same branch with a command spawns the job.
+#[tokio::test]
+async fn a_background_bash_with_a_command_spawns() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_parent, _sup, child) = parent_child(dir.path());
+    let cwd = dir.path().to_path_buf();
+
+    let call = ToolCall {
+        id: "c1".into(),
+        name: "bash".into(),
+        args: serde_json::json!({ "background": true, "command": "true" }),
+    };
+    let out = surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &call).await;
+    assert!(out.ok, "{}", text(out));
+}

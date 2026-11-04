@@ -119,7 +119,7 @@ async fn bash_stop_interrupts_a_running_command() {
         stopper.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     let started = std::time::Instant::now();
-    let out = text(bash_inner(dir.path(), &json!({"command": "sleep 10"}), &stop, None).await);
+    let out = text(bash_inner(dir.path(), "sleep 10", &json!({}), &stop, None).await);
     let elapsed = started.elapsed();
     // The stop cut the command short, not the sleep running to completion (#174).
     assert!(out.contains("cancelled by user stop"), "{out}");

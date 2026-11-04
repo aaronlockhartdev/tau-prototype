@@ -752,20 +752,19 @@ async fn read_stream(
     String::from_utf8_lossy(&full).into_owned()
 }
 
-/// Run a bash command with a sane PATH (#172); `stop`, once set, kills the
+/// Run a bash command (parsed by the dispatcher, which owns the required-arg
+/// check) with a sane PATH (#172); `stop`, once set, kills the
 /// running child (#174). `progress`, when present, streams stdout/stderr to
 /// the entry upsert hook as they arrive (issue #197); the coalesced in-flight
 /// upserts are wire-only, and the final result below replaces them.
 #[allow(clippy::too_many_lines)] // one streaming child: spawn, read, race stop
 pub(super) async fn bash_inner(
     cwd: &Path,
+    command: &str,
     args: &serde_json::Value,
     stop: &AtomicBool,
     progress: Option<&crate::tools::ToolProgress>,
 ) -> ToolResult {
-    let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
-        return ToolResult::err("bash: missing \"command\"".into());
-    };
     let timeout_secs = args
         .get("timeout_secs")
         .and_then(serde_json::Value::as_u64)
@@ -863,5 +862,8 @@ pub(super) async fn bash_inner(
 #[cfg(test)]
 pub(super) async fn bash(cwd: &Path, args: &serde_json::Value) -> ToolResult {
     let no_stop = AtomicBool::new(false);
-    bash_inner(cwd, args, &no_stop, None).await
+    let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
+        return ToolResult::err("bash: missing \"command\"".into());
+    };
+    bash_inner(cwd, command, args, &no_stop, None).await
 }
