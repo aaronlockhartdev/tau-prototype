@@ -752,6 +752,16 @@ async fn read_stream(
     String::from_utf8_lossy(&full).into_owned()
 }
 
+/// Which leg of [`bash_inner`]'s race finished. The drained leg carries the
+/// two pipes' contents, so "the child exited" and "we have the output" are one
+/// fact, not two values kept in step (audit Add5-T4: as `Option<&str>` the
+/// `Some(anything else)` arm existed for a value no producer builds).
+enum BashLeg {
+    Drained(String, String),
+    Timeout,
+    Stopped,
+}
+
 /// Run a bash command (parsed by the dispatcher, which owns the required-arg
 /// check) with a sane PATH (#172); `stop`, once set, kills the
 /// running child (#174). `progress`, when present, streams stdout/stderr to
@@ -804,37 +814,29 @@ pub(super) async fn bash_inner(
     // Race: (a) both pipes hit EOF (child exited), (b) the timeout elapses
     // (explicit `child.kill()` — the readers would otherwise block forever on
     // live pipes), (c) the stop flag (the child drops → kill_on_drop).
-    let (streams, outcome) = tokio::select! {
+    let leg = tokio::select! {
         r = async {
             tokio::join!(
                 read_stream(progress, stdout),
                 read_stream(progress, stderr),
             )
-        } => (Some(r), None),
+        } => BashLeg::Drained(r.0, r.1),
         () = async {
             tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)).await;
             child.kill().await.ok();
-        } => (None, Some("timeout")),
-        () = wait_for_flag(stop) => (None, Some("stop")),
+        } => BashLeg::Timeout,
+        () = wait_for_flag(stop) => BashLeg::Stopped,
     };
-    match outcome {
-        Some("stop") => {
-            // A user stop cancels the in-flight command (ticket #222): the
-            // child is killed on drop, the result is a cancellation, not a
-            // failure of the command itself.
-            return ToolResult::cancelled("bash: cancelled by user stop".into());
-        }
-        Some("timeout") => {
+    let (stdout, stderr) = match leg {
+        // A user stop cancels the in-flight command (ticket #222): the child
+        // is killed on drop, the result is a cancellation, not a failure of
+        // the command itself.
+        BashLeg::Stopped => return ToolResult::cancelled("bash: cancelled by user stop".into()),
+        BashLeg::Timeout => {
             return ToolResult::err(format!("bash: timed out after {timeout_secs}s").into());
         }
-        None => {}
-        Some(_) => {
-            // `&str` is not an exhaustive set; a leg other than the two named
-            // above is an internal invariant break, surfaced, not a panic.
-            return ToolResult::err("bash: internal error: unknown outcome".into());
-        }
-    }
-    let (stdout, stderr) = streams.expect("the join leg always yields its pair");
+        BashLeg::Drained(stdout, stderr) => (stdout, stderr),
+    };
     let code = match child.wait().await {
         Ok(status) => status.code().unwrap_or(-1),
         Err(e) => return ToolResult::err(format!("bash: {e}").into()),
