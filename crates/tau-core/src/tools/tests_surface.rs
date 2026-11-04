@@ -274,3 +274,70 @@ async fn a_child_core_tool_is_not_swallowed_by_the_link() {
     assert!(t.starts_with("exit 0"), "{t}");
     assert!(t.contains("surface"), "{t}");
 }
+
+// §5.4: "a write voids every anchor of that file". The registry is keyed by
+// the resolved path, so the write's `free` must use that key. A relative path
+// (the normal model case) resolves to a different string than the argument the
+// surface passed, so the write evicted nothing and the served baseline stayed
+// live against a file the write had replaced.
+#[tokio::test]
+async fn a_write_voids_the_served_baseline_of_a_relative_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_parent, _sup, child) = parent_child(dir.path());
+    let cwd = dir.path().to_path_buf();
+    std::fs::write(dir.path().join("v.txt"), "one\ntwo\n").unwrap();
+    let key = dir.path().join("v.txt").display().to_string();
+
+    let read = ToolCall {
+        id: "c1".into(),
+        name: "read".into(),
+        args: serde_json::json!({"path": "v.txt"}),
+    };
+    surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &read).await;
+    assert!(
+        child.anchors().lock().served_map(&key).is_some(),
+        "the read served the file's baseline under {key}"
+    );
+
+    let write = ToolCall {
+        id: "c2".into(),
+        name: "write".into(),
+        args: serde_json::json!({"path": "v.txt", "content": "replaced\n"}),
+    };
+    surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &write).await;
+    assert!(
+        child.anchors().lock().served_map(&key).is_none(),
+        "the write voids every anchor of the file (§5.4)"
+    );
+}
+
+/// The negative: a write refused before it touches the file voids nothing.
+#[tokio::test]
+async fn a_refused_write_leaves_the_served_baseline_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_parent, _sup, child) = parent_child(dir.path());
+    let cwd = dir.path().to_path_buf();
+    std::fs::write(dir.path().join("k.txt"), "one\ntwo\n").unwrap();
+    let key = dir.path().join("k.txt").display().to_string();
+
+    let read = ToolCall {
+        id: "c1".into(),
+        name: "read".into(),
+        args: serde_json::json!({"path": "k.txt"}),
+    };
+    surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &read).await;
+
+    // `content` missing: the write is refused before it touches the file.
+    let bad = ToolCall {
+        id: "c2".into(),
+        name: "write".into(),
+        args: serde_json::json!({"path": "k.txt"}),
+    };
+    let out = surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &bad).await;
+    assert!(!out.ok, "a write without content is refused");
+
+    assert!(
+        child.anchors().lock().served_map(&key).is_some(),
+        "the refused write left the baseline alone"
+    );
+}

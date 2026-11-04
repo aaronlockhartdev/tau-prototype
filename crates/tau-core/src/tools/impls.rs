@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::info;
 
-fn resolve(cwd: &Path, path: &str) -> PathBuf {
+pub(super) fn resolve(cwd: &Path, path: &str) -> PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()
@@ -13,7 +13,6 @@ fn resolve(cwd: &Path, path: &str) -> PathBuf {
         cwd.join(p)
     }
 }
-
 /// The 1 MiB output cap on a `read` (item 8): a page that would exceed it
 /// is cut at the last whole row that fits, and the pagination hint carries
 /// the cap so the model knows why the page is short.

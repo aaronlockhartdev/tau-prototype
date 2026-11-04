@@ -4,7 +4,7 @@
 //! names; the spawn-time agent-type filter lives here, not smeared across
 //! the loop, the spawn, and the agent.
 
-use super::impls::{bash_inner, edit, read, write};
+use super::impls::{bash_inner, edit, read, resolve, write};
 use super::{ToolCall, ToolResult};
 use crate::agent::AgentSession;
 use crate::harness::SessionRole;
@@ -111,11 +111,13 @@ pub async fn dispatch(ctx: DispatchCtx<'_>, call: &ToolCall) -> ToolResult {
             if res.ok
                 && let Some(path) = path_arg
             {
-                // A write is a file drift: drop the served baseline so the
-                // next read re-anchors (item 3).
+                // A write is a file drift: drop the served baseline so the next
+                // read re-anchors (item 3). The key is the resolved path — how
+                // read and edit key the registry — so a relative path from the
+                // model voids its anchors instead of missing them (§5.4).
                 let anchors = ctx.session.anchors();
                 let mut reg = anchors.lock();
-                reg.free(path);
+                reg.free(&resolve(ctx.cwd, path).display().to_string());
             }
             res
         }
