@@ -399,8 +399,6 @@ pub struct Edited {
     /// The old content of the replaced ranges — the removed lines, for the
     /// bounded before/after diff the edit tool returns.
     pub removed_lines: Vec<String>,
-    /// The file's per-line endings after the edit (what the write joins with).
-    pub line_endings: Vec<line_endings::Ending>,
 }
 
 /// Options for [`plan_edits`].
@@ -434,8 +432,8 @@ pub struct Planned {
     pub lines: Vec<String>,
     /// The new anchor set (survivors kept, fresh lines allocated).
     pub hashes: Vec<String>,
-    /// The new file's per-line endings.
-    pub line_endings: Vec<line_endings::Ending>,
+    /// The file's ending, as `detect` fixed it for this file (one per file).
+    pub ending: line_endings::Ending,
     /// `true` when the original file ends with a terminator.
     pub trailing: bool,
     /// Warnings from the lenient auto-fixes (reversed range, stripped
@@ -898,24 +896,10 @@ pub fn plan_edits(
     }
 
     let new_hashes = lcs_reanchor(&lines, &hashes, &new_lines).map_err(|_| EditError::TooLarge)?;
-    // Per-line endings of the new file: apply every range to the original
-    // endings in document order (each application shifts the later spans).
-    let file_endings = vec![file_ending; lines.len()];
-    let mut line_endings = file_endings;
-    for &(orig, start, end) in &ranges {
-        let count = fixed_edits[orig].content.lines().count();
-        let count = if fixed_edits[orig].content.is_empty() {
-            0
-        } else {
-            count
-        };
-        line_endings = line_endings::map_endings(&line_endings, start, end, count);
-    }
-
     Ok(Planned {
         lines: new_lines,
         hashes: new_hashes,
-        line_endings,
+        ending: file_ending,
         trailing: trailing_of(content),
         warnings,
         removed_lines,
@@ -947,7 +931,6 @@ pub fn apply_edits_opts(
         first_changed,
         last_changed,
         removed_lines: planned.removed_lines,
-        line_endings: planned.line_endings,
     })
 }
 
@@ -959,13 +942,8 @@ pub fn apply_edit(content: &str, edit: &Edit) -> Result<Edited, EditError> {
 }
 
 /// Assemble a planned edit into the file's bytes: the new lines joined with
-/// the file's endings, the trailing terminator preserved.
+/// the file's ending, the trailing terminator preserved.
 #[must_use]
 pub fn assemble(plan: &Planned) -> String {
-    let ending = plan
-        .line_endings
-        .first()
-        .copied()
-        .unwrap_or(line_endings::Ending::Lf);
-    line_endings::join(&plan.lines, ending, plan.trailing)
+    line_endings::join(&plan.lines, plan.ending, plan.trailing)
 }

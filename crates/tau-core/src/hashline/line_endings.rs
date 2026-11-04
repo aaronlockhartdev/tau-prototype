@@ -53,31 +53,6 @@ pub fn join(lines: &[String], ending: Ending, trailing: bool) -> String {
     out
 }
 
-/// The ending of the lines an edit produces, given the file's per-line
-/// endings and the edited span (0-based, inclusive) with `replacement_count`
-/// new lines: unchanged lines keep their ending, new lines take the ending of
-/// the line the span starts at (the file's dominant one in practice).
-#[must_use]
-pub fn map_endings(
-    file_endings: &[Ending],
-    start: usize,
-    end: usize,
-    replacement_count: usize,
-) -> Vec<Ending> {
-    let start = start.min(file_endings.len());
-    let end = end.min(file_endings.len() - usize::from(!file_endings.is_empty()));
-    let new_ending = file_endings
-        .get(start.min(file_endings.len().saturating_sub(1)))
-        .copied()
-        .unwrap_or(Ending::Lf);
-    let mut out = file_endings[..start].to_vec();
-    out.extend(std::iter::repeat_n(new_ending, replacement_count));
-    if end < file_endings.len() {
-        out.extend(file_endings[end + 1..].iter().copied());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,20 +73,5 @@ mod tests {
         assert_eq!(join(&lines, Ending::Crlf, true), "a\r\nb\r\n");
         assert_eq!(join(&lines, Ending::Crlf, false), "a\r\nb");
         assert_eq!(join(&[], Ending::Lf, true), "");
-    }
-
-    #[test]
-    fn map_endings_keeps_surrounding_and_extends_the_span() {
-        let ends = vec![Ending::Crlf; 5];
-        // Replace line 2 (0-based) with two lines: 5 - 1 + 2 = 6 endings out.
-        assert_eq!(map_endings(&ends, 2, 2, 2), vec![Ending::Crlf; 6]);
-        // Replace line 2 with one line: count unchanged.
-        assert_eq!(map_endings(&ends, 2, 2, 1), vec![Ending::Crlf; 5]);
-        // Delete line 2: 4 endings out.
-        assert_eq!(map_endings(&ends, 2, 2, 0), vec![Ending::Crlf; 4]);
-        // Delete line 2: 3 endings out.
-        assert_eq!(map_endings(&ends, 2, 2, 0), vec![Ending::Crlf; 4]);
-        // A span past the end extends with the last line's ending.
-        assert_eq!(map_endings(&ends, 4, 4, 1), vec![Ending::Crlf; 5]);
     }
 }

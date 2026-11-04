@@ -530,7 +530,47 @@ fn identical_file_reports_no_change() {
     assert_eq!(edited.content, "one\ntwo\nthree\n");
     assert!(edited.first_changed > edited.last_changed);
 }
+#[test]
+fn a_planned_crlf_file_assembles_back_to_crlf() {
+    // The production shape (impls.rs:482-483): planning reads the LF-normalized
+    // lines, and the ending comes from `detect` over the raw bytes.
+    let content = "one\ntwo\nthree\n";
+    let hashes = line_hashes(content).unwrap();
+    let planned = plan_edits(
+        content,
+        line_endings::Ending::Crlf,
+        &[Edit {
+            from: hashes[0].clone(),
+            to: hashes[0].clone(),
+            content: "ONE".into(),
+        }],
+        &PlanOptions::default(),
+    )
+    .expect("a strict single-line edit plans");
+    assert_eq!(planned.ending, line_endings::Ending::Crlf);
+    assert_eq!(assemble(&planned), "ONE\r\ntwo\r\nthree\r\n");
+}
 
+#[test]
+fn a_planned_lf_file_assembles_with_no_carriage_return() {
+    let content = "one\ntwo\nthree\n";
+    let hashes = line_hashes(content).unwrap();
+    let planned = plan_edits(
+        content,
+        line_endings::Ending::Lf,
+        &[Edit {
+            from: hashes[1].clone(),
+            to: hashes[1].clone(),
+            content: "TWO".into(),
+        }],
+        &PlanOptions::default(),
+    )
+    .expect("a strict single-line edit plans");
+    assert_eq!(planned.ending, line_endings::Ending::Lf);
+    let written = assemble(&planned);
+    assert!(!written.contains('\r'), "{written:?}");
+    assert_eq!(written, "one\nTWO\nthree\n");
+}
 // Red test (intermittent panic, tokio-rt-worker): the registry's anchor set
 // (299 entries) is out of sync with the file on disk (300 lines) — the file
 // grew out-of-band with a duplicate of a line already anchored. An edit
