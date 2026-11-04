@@ -134,13 +134,12 @@ fn checkbox(line: &str) -> Option<(bool, String)> {
         .or_else(|| t.strip_prefix('+'))?
         .strip_prefix(' ')?;
     let (mark, text) = rest.strip_prefix('[')?.split_once(']')?;
-    if mark.len() > 2 {
-        return None;
-    }
-    let done = matches!(mark, "x" | "X");
-    if !done && !mark.is_empty() && mark != " " {
-        return None;
-    }
+    let done = match mark {
+        "x" | "X" => true,
+        // The open box: empty, or the one space a hand-typed `- [ ]` leaves.
+        "" | " " => false,
+        _ => return None,
+    };
     let text = text.strip_prefix(' ').unwrap_or(text);
     Some((done, text.trim().to_owned()))
 }
