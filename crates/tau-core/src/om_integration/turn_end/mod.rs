@@ -60,7 +60,11 @@ impl OmState {
     /// observation cursor advances to the last promoted entry; `false` when
     /// there is nothing to promote.
     pub fn promote(&mut self, store: &mut SessionStore) -> Result<bool, OmError> {
-        if self.buffered.is_empty() {
+        // The record owns the chunks; the walk works on one snapshot so its
+        // indices are the same space `drain_to` filters by (a second copy,
+        // index-synced by hand, is the mirror this replaced).
+        let chunks = self.record.buffered_chunks.clone();
+        if chunks.is_empty() {
             return Ok(false);
         }
         // A chunk the cursor covers is spent material: its text re-summarizes
@@ -72,7 +76,7 @@ impl OmState {
         // promote itself covers counts as spent too.
         let mut running = self.record.cursor.clone();
         let mut open: Vec<usize> = Vec::new();
-        for (i, chunk) in self.buffered.iter().enumerate() {
+        for (i, chunk) in chunks.iter().enumerate() {
             if !chunk_covered(running.as_ref(), chunk) {
                 open.push(i);
                 running = Some(Cursor {
@@ -81,21 +85,19 @@ impl OmState {
                 });
             }
         }
-        let spent: Vec<usize> = (0..self.buffered.len())
-            .filter(|i| !open.contains(i))
-            .collect();
+        let spent: Vec<usize> = (0..chunks.len()).filter(|i| !open.contains(i)).collect();
         // The removal target is computed against the raw window, not the
         // stored field: a prior promote leaves chunk tokens there, and the
         // compressed chunks understate the volume the ladder must clear (#392).
         let remove = if open.is_empty() {
             0
         } else {
-            let chunks: Vec<om::ChunkTokens> = open
+            let targets: Vec<om::ChunkTokens> = open
                 .iter()
-                .map(|i| om::ChunkTokens(self.buffered[*i].tokens))
+                .map(|i| om::ChunkTokens(chunks[*i].tokens))
                 .collect();
             let raw = self.unobserved_tokens(store)?;
-            om::projected_message_removal(&chunks, &self.config, raw)
+            om::projected_message_removal(&targets, &self.config, raw)
         };
         let mut count = 0usize;
         if remove > 0 {
@@ -103,7 +105,7 @@ impl OmState {
             // the cumulative sums are monotone, so the walk lands exactly on it.
             let mut cumulative = 0u32;
             for i in &open {
-                cumulative = cumulative.saturating_add(self.buffered[*i].tokens);
+                cumulative = cumulative.saturating_add(chunks[*i].tokens);
                 count += 1;
                 if cumulative >= remove {
                     break;
@@ -121,7 +123,7 @@ impl OmState {
             return Ok(false);
         }
         for i in &open[..count] {
-            let chunk = &self.buffered[*i];
+            let chunk = &chunks[*i];
             self.record.active_observations = om::append_observation(
                 &self.record.active_observations,
                 &boundary_ts(),
@@ -134,29 +136,20 @@ impl OmState {
         }
         self.record.observation_tokens = om::token_count(&self.record.active_observations);
         let kept: Vec<usize> = open[count..].to_vec();
-        self.record.pending_tokens = kept.iter().map(|i| self.buffered[*i].tokens).sum();
+        self.record.pending_tokens = kept.iter().map(|i| chunks[*i].tokens).sum();
         self.drain_to(store, &kept)?;
         Ok(true)
     }
 
-    /// The promote's drain, in lockstep with the durable record: every chunk at
-    /// an index outside `kept` leaves both — spent material (its text reaches no
-    /// log) and promoted material alike. A promoted chunk that survives in the
-    /// record is re-promoted, its text appended a second time (ticket #86 P2).
-    /// The record is written only when something left: a promote that changes
-    /// nothing appends no `om` entry.
+    /// The promote's drain: every chunk at an index outside `kept` leaves the
+    /// record — spent material (its text reaches no log) and promoted material
+    /// alike. A promoted chunk that survives in the record is re-promoted, its
+    /// text appended a second time (ticket #86 P2). The record is written only
+    /// when something left: a promote that changes nothing appends no `om`
+    /// entry.
     fn drain_to(&mut self, store: &mut SessionStore, kept: &[usize]) -> Result<(), OmError> {
         let keep = |i: usize| kept.contains(&i);
-        if self.buffered.len() == kept.len() {
-            return Ok(());
-        }
-        self.buffered = self
-            .buffered
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| keep(*i))
-            .map(|(_, c)| c.clone())
-            .collect();
+        let before = self.record.buffered_chunks.len();
         self.record.buffered_chunks = self
             .record
             .buffered_chunks
@@ -165,6 +158,9 @@ impl OmState {
             .filter(|(i, _)| keep(*i))
             .map(|(_, c)| c.clone())
             .collect();
+        if self.record.buffered_chunks.len() == before {
+            return Ok(());
+        }
         self.save(store).map_err(OmError::from)
     }
 
@@ -223,7 +219,7 @@ impl OmState {
             idle = idle_gap_secs(&all, leaf.as_deref());
             Ok(())
         })?;
-        if !self.buffered.is_empty()
+        if !self.buffered().is_empty()
             && (self.activation_reached(self.record.pending_tokens) || idle >= IDLE_ACTIVATION_SECS)
         {
             let mut promoted = false;

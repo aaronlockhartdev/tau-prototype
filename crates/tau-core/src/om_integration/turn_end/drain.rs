@@ -35,16 +35,15 @@ impl OmState {
 
     /// Run the settled plan, then drain if the window sits at or past the
     /// line. Each slice plans from live state: the window is re-read under
-    /// the session lock and the buffer mirror re-built from the durable
-    /// record — the same phase-1 rebuild `read_candidates` runs — so a
-    /// background cycle committing between slices is never observed twice
-    /// (#402's discipline, N-fold).
+    /// the session lock, and the buffered chunks are the record's — a cycle
+    /// commits through the session's own store, whose write-back mirror
+    /// (`commit_chunk`) lands them in this state's record under the same
+    /// lock, so the plan's cut sees them (#402's discipline, N-fold).
     ///
     /// A slice that advances nothing — a degenerate answer — ends the
     /// drain: the settle never pays twice for one frozen span. A failed
     /// slice returns `Err` with everything already paid committed; the
     /// agent latches `om_failed` once and the turn proceeds (#86).
-    ///
     /// The gate quantity is the whole raw window past the observation
     /// cursor; the plan's is the slice past BOTH cursors — raw the log
     /// already carries in a chunk is not pending work. The promote, which
@@ -74,7 +73,7 @@ impl OmState {
             let mut unobserved: Option<Vec<crate::session::Entry>> = None;
             with_store(&mut |store| {
                 unobserved = Some(self.unobserved(store)?);
-                self.sync_buffer_mirror_from_durable(store)?;
+                self.fast_forward_chunks_from_durable(store)?;
                 Ok(())
             })?;
             let unobserved = unobserved.expect("the phase ran");
@@ -97,19 +96,43 @@ impl OmState {
         Ok(())
     }
 
-    /// Rebuild the buffer mirror from the durable record — the phase-1
-    /// rebuild `read_candidates` runs (D4: the file wins over any
-    /// snapshot). A cycle commits between drain slices through the
-    /// session's own store; the drain's clone of the mirror is as stale as
-    /// the pre-join clone #402 fixed, and `plan` cuts on it.
-    fn sync_buffer_mirror_from_durable(&mut self, store: &mut SessionStore) -> Result<(), OmError> {
-        let record = OmState::load_record(store)?;
-        self.buffered = record.buffered_chunks;
-        self.buffer_cursor = super::super::last_chunk_end(&self.buffered);
+    /// The drain slice's read of the durable chunk state (D4: the file wins
+    /// over any snapshot). A background cycle commits through the session's
+    /// own store while the pass runs on its own copy of the state, so between
+    /// slices the file's chunk fields are ahead of this record's, and a slice
+    /// that planned over a cycle's missing chunk re-observed raw the new chunk
+    /// stands for (#402's discipline, N-fold). The buffer cursor advances to
+    /// the durable chunks' furthest end and never retreats: a promote that
+    /// drained every chunk leaves this state's cursor naming the range it
+    /// covered, and resetting it to that empty set would cut the plan's window
+    /// at the branch head — the raw the promoted text summarizes, twice.
+    fn fast_forward_chunks_from_durable(
+        &mut self,
+        store: &mut SessionStore,
+    ) -> Result<(), OmError> {
+        let durable = OmState::load_record(store)?;
+        self.record.buffered_chunks = durable.buffered_chunks;
+        self.record.last_buffered_at_tokens = self
+            .record
+            .last_buffered_at_tokens
+            .max(durable.last_buffered_at_tokens);
+        if let Some(end) = super::super::last_chunk_end(&self.record.buffered_chunks) {
+            let advanced = match self.buffer_cursor.as_deref() {
+                None => true,
+                // A non-numeric cursor (a record from a build that minted
+                // differently) stands: the durable end cannot order it.
+                Some(seen) => match (seen.parse::<u64>(), end.parse::<u64>()) {
+                    (Ok(seen), Ok(end)) => end > seen,
+                    _ => false,
+                },
+            };
+            if advanced {
+                self.buffer_cursor = Some(end);
+            }
+        }
         Ok(())
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,7 +148,6 @@ mod tests {
                 observe_threshold: u32::try_from(observe_threshold).unwrap(),
                 ..Default::default()
             },
-            buffered: Vec::new(),
             buffer_cursor: None,
         }
     }
@@ -150,5 +172,76 @@ mod tests {
         // A threshold at the u32 ceiling must not wrap the line to a small
         // number: the line saturates.
         assert_eq!(state(u64::from(u32::MAX), 0).drain_line(), u32::MAX);
+    }
+
+    /// The chunk the durable record carries, for the drain slice's read.
+    fn chunk(first: &str, last: &str, text: &str) -> crate::om_integration::BufferedChunk {
+        crate::om_integration::BufferedChunk {
+            range: (first.into(), last.into()),
+            last_ts: 100,
+            text: text.into(),
+            tokens: 100,
+        }
+    }
+
+    #[test]
+    fn a_drain_slice_takes_the_durable_chunks_as_the_ones_it_has() {
+        // The record is the chunk store (ticket #86 P2): a background cycle
+        // commits through the session's store while the pass runs on its own
+        // copy of the state, so between slices the file is ahead. The slice
+        // plans over the durable set — a second copy kept in sync by hand is
+        // the state space a mirror does not share.
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = super::super::super::tests::store_with_text_entries(dir.path(), 2, 100);
+        let durable = crate::om::OmRecord {
+            buffered_chunks: vec![chunk("00000001", "00000002", "cycle chunk")],
+            last_buffered_at_tokens: 500,
+            ..Default::default()
+        };
+        OmState::from_config(&crate::config::Om::default(), durable)
+            .save(&mut store)
+            .unwrap();
+        // The pass's copy: the chunks a concurrent promote drained, so its
+        // indices are not the durable set's.
+        let mut live = state(30_000, 0);
+        live.record.buffered_chunks = vec![
+            chunk("00000001", "00000002", "cycle chunk"),
+            chunk("00000003", "00000004", "already promoted"),
+        ];
+
+        live.fast_forward_chunks_from_durable(&mut store).unwrap();
+
+        assert_eq!(
+            live.buffered()
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cycle chunk"],
+            "the slice's chunks are the file's, not the copy's"
+        );
+        assert_eq!(live.buffer_cursor.as_deref(), Some("00000002"));
+        assert_eq!(live.record.last_buffered_at_tokens, 500);
+    }
+
+    #[test]
+    fn a_slice_does_not_cut_the_plan_at_the_branch_head_after_a_promote() {
+        // The promote drains every chunk and latches the cursor on the range
+        // it covered. The durable record then holds no chunks at all: a slice
+        // that rebuilt the cursor from the empty durable set cut the plan's
+        // window at the branch head, and the next Observer pass was shown the
+        // raw the promoted text summarizes (#408 pays once).
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = super::super::super::tests::store_with_text_entries(dir.path(), 2, 100);
+        let mut live = state(30_000, 0);
+        live.buffer_cursor = Some("00000006".into());
+
+        live.fast_forward_chunks_from_durable(&mut store).unwrap();
+
+        assert!(live.buffered().is_empty(), "no chunk is durable");
+        assert_eq!(
+            live.buffer_cursor.as_deref(),
+            Some("00000006"),
+            "the cursor stands: the durable set is empty, not behind it"
+        );
     }
 }

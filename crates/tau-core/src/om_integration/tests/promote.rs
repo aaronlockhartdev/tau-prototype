@@ -7,7 +7,7 @@ use super::*;
 fn state_with_two_chunks(pending_tokens: u32) -> OmState {
     let mut state = OmState::from_config(&crate::config::Om::default(), OmRecord::default());
     state.record.pending_tokens = pending_tokens;
-    state.buffered = vec![
+    state.record.buffered_chunks = vec![
         BufferedChunk {
             range: ("00000001".into(), "00000002".into()),
             last_ts: 100,
@@ -21,9 +21,6 @@ fn state_with_two_chunks(pending_tokens: u32) -> OmState {
             tokens: 3000,
         },
     ];
-    // The record is the durable chunk store (ticket #86 P2): the mirror
-    // and the record are kept in lockstep.
-    state.record.buffered_chunks = state.buffered.clone();
     state
 }
 
@@ -43,7 +40,7 @@ fn promote_leaves_chunks_buffered_at_or_below_the_floor() {
     let mut store = store_with_text_entries(dir.path(), 2, 10_000);
     let mut state = state_with_two_chunks(50_000);
     assert!(!state.promote(&mut store).unwrap());
-    assert_eq!(state.buffered.len(), 2);
+    assert_eq!(state.buffered().len(), 2);
     assert!(state.record.cursor.is_none());
 }
 
@@ -68,7 +65,7 @@ fn promote_moves_the_chunks_to_the_log_and_advances_the_cursor() {
         })
     );
     assert_eq!(state.record.pending_tokens, 0);
-    assert!(state.buffered.is_empty());
+    assert!(state.buffered().is_empty());
     // The promoted record persists in the session file.
     let reloaded = OmState::load_record(&mut store).unwrap();
     assert_eq!(reloaded.cursor, state.record.cursor);
@@ -84,7 +81,7 @@ fn promote_stops_at_the_boundary_and_keeps_the_rest_buffered() {
     let mut store = store_with_text_entries(dir.path(), 4, 10_000);
     let mut state = OmState::from_config(&crate::config::Om::default(), OmRecord::default());
     state.record.pending_tokens = 0;
-    state.buffered = vec![
+    state.record.buffered_chunks = vec![
         BufferedChunk {
             range: ("00000001".into(), "00000002".into()),
             last_ts: 100,
@@ -98,9 +95,6 @@ fn promote_stops_at_the_boundary_and_keeps_the_rest_buffered() {
             tokens: 5000,
         },
     ];
-    // The record is the durable chunk store (ticket #86 P2): the mirror
-    // and the record are kept in lockstep.
-    state.record.buffered_chunks = state.buffered.clone();
     assert!(state.promote(&mut store).unwrap());
 
     assert!(state.record.active_observations.contains("obs one"));
@@ -113,8 +107,8 @@ fn promote_stops_at_the_boundary_and_keeps_the_rest_buffered() {
         })
     );
     assert_eq!(state.record.pending_tokens, 5000);
-    assert_eq!(state.buffered.len(), 1);
-    assert_eq!(state.buffered[0].text, "obs two");
+    assert_eq!(state.buffered().len(), 1);
+    assert_eq!(state.buffered()[0].text, "obs two");
 }
 
 /// A buffered chunk the observation cursor already covers, for the #395 legs:
@@ -144,12 +138,10 @@ fn a_chunk_the_cursor_covers_promotes_neither_text_nor_cursor() {
         timestamp: 600,
     });
     state.record.active_observations = "prior observation".into();
-    state.buffered = vec![
+    state.record.buffered_chunks = vec![
         covered_chunk("00000001", "00000002", 3000, "obs one"),
         covered_chunk("00000003", "00000004", 3000, "obs two"),
     ];
-    state.record.buffered_chunks = state.buffered.clone();
-
     assert!(
         !state.promote(&mut store).unwrap(),
         "a chunk the cursor covers is spent: it compacts nothing"
@@ -169,7 +161,7 @@ fn a_chunk_the_cursor_covers_promotes_neither_text_nor_cursor() {
         state.record.active_observations
     );
     assert!(
-        state.buffered.is_empty(),
+        state.buffered().is_empty(),
         "the spent chunks leave the buffer"
     );
     assert!(
@@ -191,12 +183,11 @@ fn a_covered_prefix_is_skipped_and_the_walk_promotes_from_the_first_open_chunk()
         entry_id: "00000004".into(),
         timestamp: 400,
     });
-    state.buffered = vec![
+    state.record.buffered_chunks = vec![
         covered_chunk("00000001", "00000002", 3000, "obs one"),
         covered_chunk("00000003", "00000004", 3000, "obs two"),
         covered_chunk("00000005", "00000006", 3000, "obs three"),
     ];
-    state.record.buffered_chunks = state.buffered.clone();
 
     assert!(
         state.promote(&mut store).unwrap(),
@@ -217,7 +208,7 @@ fn a_covered_prefix_is_skipped_and_the_walk_promotes_from_the_first_open_chunk()
         "the covered prefix reaches the log: {:?}",
         state.record.active_observations
     );
-    assert!(state.buffered.is_empty());
+    assert!(state.buffered().is_empty());
 }
 
 #[test]
@@ -233,12 +224,11 @@ fn spent_chunks_drain_when_the_floor_leaves_nothing_to_remove() {
         entry_id: "00000002".into(),
         timestamp: 200,
     });
-    state.buffered = vec![covered_chunk("00000001", "00000002", 3000, "obs one")];
-    state.record.buffered_chunks = state.buffered.clone();
+    state.record.buffered_chunks = vec![covered_chunk("00000001", "00000002", 3000, "obs one")];
 
     assert!(!state.promote(&mut store).unwrap());
     assert!(
-        state.buffered.is_empty(),
+        state.buffered().is_empty(),
         "a spent chunk is not kept for an activation that can never take it"
     );
     assert!(state.record.buffered_chunks.is_empty());
@@ -266,11 +256,10 @@ fn a_spent_chunk_at_the_tail_leaves_and_the_open_one_advances_the_cursor() {
         entry_id: "00000004".into(),
         timestamp: 400,
     });
-    state.buffered = vec![
+    state.record.buffered_chunks = vec![
         covered_chunk("00000005", "00000006", 3000, "obs five"),
         covered_chunk("00000001", "00000003", 3000, "obs spent"),
     ];
-    state.record.buffered_chunks = state.buffered.clone();
 
     assert!(
         state.promote(&mut store).unwrap(),
@@ -291,23 +280,22 @@ fn a_spent_chunk_at_the_tail_leaves_and_the_open_one_advances_the_cursor() {
         "the cursor advanced over the open chunk, never to the spent one's 3"
     );
     assert!(
-        state.buffered.is_empty() && state.record.buffered_chunks.is_empty(),
+        state.buffered().is_empty() && state.record.buffered_chunks.is_empty(),
         "the spent tail chunk leaves too, or every later target is computed over it"
     );
 }
 
+/// The record is the durable chunk store (ticket #86 P2): promote drains it,
+/// or a reloaded state re-promotes the same chunks and appends their text to
+/// the log twice.
 #[test]
 fn promote_drains_the_durable_record_chunks() {
-    // The record is the durable chunk store (ticket #86 P2): promote must
-    // drain it in lockstep with the in-memory mirror, or a reloaded state
-    // re-promotes the same chunks and appends their text to the log twice.
     let dir = tempfile::tempdir().unwrap();
     let mut store = store_with_text_entries(dir.path(), 4, 10_000);
     let mut state = state_with_two_chunks(0);
-    state.record.buffered_chunks = state.buffered.clone();
 
     assert!(state.promote(&mut store).unwrap());
-    assert!(state.buffered.is_empty());
+    assert!(state.buffered().is_empty());
     assert!(state.record.buffered_chunks.is_empty());
 
     let reloaded = OmState::load_record(&mut store).unwrap();
