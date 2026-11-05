@@ -502,6 +502,7 @@ impl LoadError {
             | Self::ZeroMaxTokens { .. }
             | Self::FleetCapInversion { .. }
             | Self::ProviderNameHasSlash { .. }
+            | Self::ModelKeyEmpty { .. }
             | Self::LevelUndeclared { .. } => None,
         }
     }
@@ -552,6 +553,15 @@ pub enum LoadError {
     /// A provider name carrying `/` (#354): an id's prefix is where its
     /// provider's name ends, so a name with a slash leaves the prefix ambiguous.
     ProviderNameHasSlash {
+        provider: String,
+    },
+    /// A model key of nothing (Add6-A1): `models` is a map, so `[providers.<p>.models.""]`
+    /// is a legal entry, and a provider's first key is the model a session opens
+    /// on when the config names no `default_model`. A session that opens on no
+    /// model records a model change to nothing at every reopen — the reader
+    /// refuses the record, so the fold never answers the model question and each
+    /// reopen sees a change it has to append again to an append-only log.
+    ModelKeyEmpty {
         provider: String,
     },
     /// `[om] buffer_tokens` named in a layer (#408): the key is retired — the
@@ -621,6 +631,10 @@ impl fmt::Display for LoadError {
             Self::ProviderNameHasSlash { provider } => write!(
                 f,
                 "providers.{provider}: a provider name must not contain '/'; an id's prefix is its provider's name"
+            ),
+            Self::ModelKeyEmpty { provider } => write!(
+                f,
+                "providers.{provider}.models.\"\": a model key must not be empty; a provider's first key is the model a session opens on"
             ),
             Self::LevelUndeclared { key } => write!(
                 f,

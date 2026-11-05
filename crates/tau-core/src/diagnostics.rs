@@ -139,9 +139,14 @@ impl Diagnostics {
         }
     }
 
-    /// A blank name is no name. The hand-written `Diagnostic` deserializer
-    /// defaults a missing field to `""`, so a truncated `model_changed` must
-    /// not answer the session's model question with nothing.
+    /// A blank name is no name. Two readers can hand one in: a pre-#306
+    /// `system` note of `model: `, and a `model_changed` record written to `""`
+    /// by a build that predates the load guard (`config::spelling`) — that file
+    /// survives on disk, so the fold keeps meeting it. Naming no model strands
+    /// the session: `open_route` reads the record as its model, the next reopen
+    /// sees a change from it, and an append-only log gains one per reopen
+    /// forever. Answering nothing sends the session to the config's model, which
+    /// is recorded once.
     fn set_model(&mut self, to: String) {
         if !to.is_empty() {
             self.model = Some(to);

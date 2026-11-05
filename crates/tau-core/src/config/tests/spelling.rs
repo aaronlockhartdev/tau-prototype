@@ -199,3 +199,45 @@ context_window = 1000
     );
     load_from(system, project).expect("the project layer's provider declares it");
 }
+
+#[test]
+fn a_model_key_of_nothing_is_refused() {
+    // Add6-A1: TOML accepts the empty key, the map accepts it, the first key of
+    // a provider is the model a session opens on, and every reopen of a session
+    // on it appends another `model_changed` to a log that is append-only.
+    let toml = r#"[providers.dev]
+base_url = "http://x/v1"
+
+[providers.dev.models.""]
+context_window = 1000
+"#;
+    let err = load_from(toml, "").unwrap_err();
+    assert!(
+        matches!(&err, LoadError::ModelKeyEmpty { provider } if provider == "dev"),
+        "{err}"
+    );
+    // docs/config.md's load-failure list quotes this string.
+    assert_eq!(
+        err.to_string(),
+        "providers.dev.models.\"\": a model key must not be empty; a provider's first key is the model a session opens on"
+    );
+}
+
+#[test]
+fn a_model_key_that_is_whitespace_padded_loads() {
+    // The negative: the refusal is the empty key, not a key a trim would tidy.
+    // `" dev "` is a key the map carries whole.
+    let toml = r#"[providers.dev]
+base_url = "http://x/v1"
+
+[providers.dev.models." dev "]
+context_window = 1000
+"#;
+    let config = load_from(toml, "").expect("a non-empty key is a key");
+    assert!(
+        config
+            .providers
+            .get("dev")
+            .is_some_and(|p| p.models.contains_key(" dev "))
+    );
+}
