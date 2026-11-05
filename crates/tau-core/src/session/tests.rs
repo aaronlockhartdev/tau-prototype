@@ -452,12 +452,67 @@ fn a_fresh_handle_mints_past_the_files_ids() {
         .unwrap();
 
     let mut fresh = store(dir.path(), "s1");
-    let minted = fresh.mint_id();
+    let minted = fresh.mint_id().unwrap();
     assert!(
         minted > last.id,
         "fresh handle minted {minted}, at or below the file's last id {}",
         last.id
     );
+}
+
+#[test]
+fn a_failed_open_mints_nothing() {
+    // 3B, the 80 GB root: minting swallowed the open's failure, so a store
+    // that cannot read its file minted from the empty counter —
+    // `00000001`, the first entry id every session file holds. The duplicate
+    // id is what the parent-chain walk loops on (the 80 GB runaway); the
+    // swallow is what issued it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = store(dir.path(), "s1");
+    s.create().unwrap();
+    let first = s
+        .append(EntryKind::User, serde_json::json!({"text": "seed"}), None)
+        .unwrap();
+    // A file whose first line is not a header: every read of it fails.
+    fs::write(s.path(), "not a session header\n").unwrap();
+    let minted = store(dir.path(), "s1").mint_id();
+    assert!(
+        minted.is_err(),
+        "a store whose open failed minted {minted:?}, at the file's first id {}",
+        first.id
+    );
+}
+
+/// Two handles over one file mint from their own counters, so an id one
+/// reserves can be written by the other before its own line lands (the
+/// harness re-opens live sessions; fork/branch rewrite through their own
+/// stores). The mint is past the choke point — the append is what knows the
+/// id set — so a duplicate id is refused there, never appended: a duplicate
+/// id is what the parent-chain walk loops on (the 80 GB runaway's shape).
+#[test]
+fn a_second_store_may_not_write_an_id_the_file_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = store(dir.path(), "s1");
+    first.create().unwrap();
+    let mut second = store(dir.path(), "s1");
+    // `second` reads the header-only file, so its counter points at
+    // 00000001 — the id the entry below takes.
+    let id = second.mint_id().unwrap();
+    first
+        .append(EntryKind::User, serde_json::json!({"text": "winner"}), None)
+        .unwrap();
+    let dup = second.append_entry(
+        &id,
+        EntryKind::User,
+        serde_json::json!({"text": "duplicate"}),
+        None,
+    );
+    assert!(
+        matches!(dup, Err(Error::Other(_))),
+        "a duplicate id was appended: {dup:?}"
+    );
+    // The file keeps the one line the winner wrote.
+    assert_eq!(second.entries_range(0, usize::MAX).unwrap().len(), 1);
 }
 
 #[test]

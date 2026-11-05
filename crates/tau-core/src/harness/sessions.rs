@@ -453,7 +453,9 @@ fn repair_dangling_tool_calls(store: &mut SessionStore) -> Result<(), ProtocolEr
         if covered.contains(call.call_id.as_str()) {
             continue;
         }
-        let entry_id = store.mint_id();
+        let entry_id = store.mint_id().map_err(|e| ProtocolError::Other {
+            message: e.to_string(),
+        })?;
         store
             .append_entry(
                 &entry_id,

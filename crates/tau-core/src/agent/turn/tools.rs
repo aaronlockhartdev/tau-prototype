@@ -44,7 +44,7 @@ impl AgentSession {
     }
 
     fn cancelled_tool_entry(&self, call: &FunctionCall) -> Result<(), AgentError> {
-        let entry_id = self.inner.lock().store.mint_id();
+        let entry_id = self.inner.lock().store.mint_id()?;
         self.append_id(
             &entry_id,
             EntryKind::Tool,
@@ -75,7 +75,7 @@ impl AgentSession {
             if bad_edits.contains(&ci) {
                 // Same file already edited earlier in this batch: refuse
                 // before dispatch — the file is left untouched.
-                let entry_id = self.inner.lock().store.mint_id();
+                let entry_id = self.inner.lock().store.mint_id()?;
                 self.append_id(
                     &entry_id,
                     EntryKind::Tool,
@@ -108,9 +108,10 @@ impl AgentSession {
             // the file keeps one line for the call.
             let (entry_id, parent, timestamp, upsert) = {
                 let mut inner = self.inner.lock();
+                let entry_id = inner.store.mint_id()?;
                 let parent = inner.store.leaf().ok().flatten().map(|e| e.id);
                 (
-                    inner.store.mint_id(),
+                    entry_id,
                     parent,
                     inner.store.now(),
                     inner.entry_upsert_hook.clone(),
