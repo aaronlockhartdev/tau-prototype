@@ -1,10 +1,10 @@
 //! Core state: the owned registry (workspaces, live sessions), the builder, the workspace index, and the small shared helpers.
 
 use super::{
-    AgentSession, Arc, AtomicBool, AtomicU64, BTreeMap, ChildProviderFactory, Config, Duration,
-    Event, ForwardingProvider, HashMap, Lane, MessageLane, Mutex, Ordering, Path, PathBuf,
-    ProtocolError, SessionMeta, Skeleton, SkillInfo, SystemEventKind, TurnProviderRef, Watcher,
-    Weak, Workspace, config, mpsc, skill_info,
+    AgentSession, Arc, AtomicBool, AtomicU64, BTreeMap, ChildProviderFactory, Config,
+    ConfigRejection, ConfigState, Duration, Event, ForwardingProvider, HashMap, Lane, MessageLane,
+    Mutex, Ordering, Path, PathBuf, ProtocolError, SessionMeta, Skeleton, SkillInfo,
+    SystemEventKind, TurnProviderRef, Watcher, Weak, Workspace, config, mpsc, skill_info,
 };
 
 /// The watcher's debounce window (design #30): a save burst (a temp-write
@@ -23,15 +23,6 @@ pub(crate) const MAX_TITLE_LEN: usize = 200;
 /// per-chunk idle deadline). A connect that takes this long is a dead
 /// endpoint, not a slow model.
 pub(crate) const CONNECT_TIMEOUT_SECS: u64 = 30;
-
-/// A config layer the code could not read: the file to name to the user, and
-/// what the loader said. The session keeps running on its last good config
-/// beside the rejection (#359).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ConfigRejection {
-    pub(crate) path: String,
-    pub(crate) reason: String,
-}
 
 /// A live session: the loop plus the binding's view of its lanes, the
 /// stop flag, and the provider (kept here so a turn can be diffed against
@@ -115,14 +106,14 @@ impl WorkspaceState {
 pub struct Core {
     pub(crate) workspaces: Mutex<BTreeMap<String, WorkspaceState>>,
     pub(crate) sessions: Mutex<HashMap<String, Arc<LiveSession>>>,
-    pub(crate) configs: Mutex<HashMap<String, Config>>,
-    /// A workspace whose project layer stopped reading, keyed to what the loader
-    /// said. The merged entry beside it is the config the workspace keeps running
-    /// on; the mark is what tells the next turn boundary that the file on disk no
-    /// longer says that (#359). The watcher sets it; a merge that replaces the entry
-    /// it describes — the watcher's reload, a system reload's drop, a read that
-    /// reads — clears it.
-    pub(crate) config_stale: Mutex<HashMap<String, ConfigRejection>>,
+    /// Each workspace's config state: the config it runs on, and the load
+    /// failure it runs beside (#359). The system layer is not a workspace, so
+    /// no key in this map borrows a sentinel id — it lives in `system`.
+    pub(crate) configs: Mutex<HashMap<String, ConfigState>>,
+    /// The system layer's state: the config every workspace's merge rides, and
+    /// the cause a cold read folds in when that layer stops reading (#364,
+    /// #419). One value, not a map keyed by the empty workspace id.
+    pub(crate) system: Mutex<ConfigState>,
     /// The home-level skill roots (`{system}/skills` + `{home}/.agents/skills`),
     /// watched once globally (ticket #31): identical for every workspace, so
     /// one watcher re-discovers all open workspaces. A `None` seam (the test
@@ -280,7 +271,10 @@ impl CoreBuilder {
             workspaces: Mutex::new(BTreeMap::new()),
             sessions: Mutex::new(HashMap::new()),
             configs: Mutex::new(HashMap::new()),
-            config_stale: Mutex::new(HashMap::new()),
+            system: Mutex::new(ConfigState::Current {
+                config: Config::default(),
+                rejection: None,
+            }),
             home_watcher: Mutex::new(None),
             system_config_watcher: Mutex::new(None),
             plans: Mutex::new(HashMap::new()),
@@ -327,19 +321,19 @@ impl CoreBuilder {
                     // project layer reads the kept defaults and would see no
                     // cause; the session-open headline chains this mark, so a
                     // rejected layer is never reported as "no providers"
-                    // (#419). The system key is the empty workspace, the
-                    // watcher's own routing.
-                    core.config_stale.lock().insert(
-                        String::new(),
-                        Core::rejection_at(&dir.join(config::CONFIG_FILE), &e),
-                    );
+                    // (#419).
+                    core.system
+                        .lock()
+                        .mark_stale(Core::rejection_at(&dir.join(config::CONFIG_FILE), &e));
                 }
             }
         }
         for (name, p) in self.providers {
             config.providers.insert(name, p);
         }
-        core.configs.lock().insert(String::new(), config);
+        // The layer the boot read (defaults where it refused): a mark the arm
+        // above wrote rides the swap, so the cold read still meets the cause.
+        core.system.lock().set_current(config);
         // The workspaces a previous run left open: re-register the ones
         // whose folder still exists (sessions are read from disk on
         // demand); a closed workspace (B7) stays closed across the restart.
@@ -516,7 +510,7 @@ impl Core {
     }
 
     pub(crate) fn system_config(&self) -> Config {
-        self.configs.lock().get("").cloned().unwrap_or_default()
+        self.system.lock().config().cloned().unwrap_or_default()
     }
 
     pub(crate) fn open_workspace(self: &Arc<Self>, cwd: &str) -> Result<Workspace, ProtocolError> {
@@ -706,8 +700,9 @@ impl Core {
         let w = self.workspace(id)?;
         self.set_workspace_open(&w, false);
         self.workspaces.lock().remove(id);
+        // One entry per workspace: the config it ran on and the mark beside it
+        // go together.
         self.configs.lock().remove(id);
-        self.config_stale.lock().remove(id);
         Ok(())
     }
 
@@ -779,8 +774,8 @@ impl Core {
             // the same-named root entry, others coexist.
             if project.exists() {
                 let loaded = config::load(&self.system_dir_of(), &project)?;
-                // #419: a read that touched the system layer clears its mark.
-                self.config_stale.lock().remove(&String::new());
+                // #419: a read that touched the system layer answers its mark.
+                self.system.lock().answer_mark();
                 for (name, p) in loaded.providers {
                     c.providers.insert(name, p);
                 }
@@ -796,7 +791,7 @@ impl Core {
             // A load that read the system file proves the boot's rejection
             // answered: the repair self-heals at the next read, even where
             // no watcher is parked to reload (#419).
-            self.config_stale.lock().remove(&String::new());
+            self.system.lock().answer_mark();
             merged
         } else {
             self.system_config()
@@ -838,19 +833,28 @@ impl Core {
         // One lock at a time: `parking_lot::Mutex` is not reentrant, and the
         // ordering invariant is cheaper to honor than to document.
         let warm = self.configs.lock().get(&workspace.id).cloned();
-        if let Some(c) = warm {
-            // The warm entry is the last config this workspace read. If the file
-            // on disk stopped reading, the mark says so and the boundary is told;
-            // the run continues on the warm entry (spec §12's reload failure path).
-            return (c, self.config_stale.lock().get(&workspace.id).cloned());
+        if let Some(state @ ConfigState::Current { .. }) = &warm {
+            // The warm entry is the last config this workspace read. If the
+            // file on disk stopped reading, the mark beside it says so and the
+            // boundary is told; the run continues on the warm entry (spec §12's
+            // reload failure path).
+            return (
+                state.config().cloned().unwrap_or_default(),
+                state.rejection().cloned(),
+            );
         }
         match self.read_workspace_config(workspace) {
             Ok(c) => {
-                // The merge this read produced supersedes the one the mark rode,
-                // so the mark goes with it: a mark describes one merged entry, and
-                // a config read off disk now is current by construction (#359).
-                self.configs.lock().insert(workspace.id.clone(), c.clone());
-                self.config_stale.lock().remove(&workspace.id);
+                // The merge this read produced supersedes the one the mark
+                // rode, so the new entry carries no mark: a config read off
+                // disk is current by construction (#359).
+                self.configs.lock().insert(
+                    workspace.id.clone(),
+                    ConfigState::Current {
+                        config: c.clone(),
+                        rejection: None,
+                    },
+                );
                 (c, self.system_rejection())
             }
             Err(e) => {
@@ -859,10 +863,14 @@ impl Core {
                 // read, else the system layer (what boot loaded). A failed read
                 // writes nothing, so the cache holds only configs that read — a
                 // broken layer is met again at the next boundary, where the
-                // check runs anew (#359). `system_config()` takes this same lock,
-                // so it is called with no guard held.
-                let warm = self.configs.lock().get(&workspace.id).cloned();
-                let kept = warm.unwrap_or_else(|| self.system_config());
+                // check runs anew (#359).
+                let kept = self
+                    .configs
+                    .lock()
+                    .get(&workspace.id)
+                    .and_then(ConfigState::config)
+                    .cloned()
+                    .unwrap_or_else(|| self.system_config());
                 (kept, Some(Self::rejection_of(&e)))
             }
         }
@@ -875,7 +883,7 @@ impl Core {
     /// refused layer is told the layer was refused, not that providers are
     /// missing.
     fn system_rejection(&self) -> Option<ConfigRejection> {
-        self.config_stale.lock().get("").cloned()
+        self.system.lock().rejection().cloned()
     }
     /// What a load failure tells a session: what the loader said, and the file to
     /// name. A parse failure carries its own layer. A load rule speaks of the

@@ -126,3 +126,24 @@ fn new_session(core: &Arc<Core>, workspace: &Workspace) -> String {
         other => panic!("expected a session: {other:?}"),
     }
 }
+
+/// The config the workspace's cached entry serves: what its sessions run on.
+/// `None` is no config — no entry, or a mark alone.
+fn cached_config(core: &Arc<Core>, workspace: &Workspace) -> Option<Config> {
+    core.configs
+        .lock()
+        .get(&workspace.id)
+        .and_then(ConfigState::config)
+        .cloned()
+}
+
+/// The mark the workspace's entry carries: the load failure its cached config
+/// runs beside (#359). One entry answers both reads — the merge and its mark
+/// travel together, so no test has to cross-check two maps.
+fn cached_mark(core: &Arc<Core>, workspace: &Workspace) -> Option<ConfigRejection> {
+    core.configs
+        .lock()
+        .get(&workspace.id)
+        .and_then(ConfigState::rejection)
+        .cloned()
+}

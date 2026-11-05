@@ -164,12 +164,8 @@ async fn a_layer_repaired_while_the_workspace_is_closed_is_live_at_the_reopen() 
     core.reload_workspace_config(&ws);
     core.close_workspace(&ws.id).unwrap();
     assert!(
-        core.configs.lock().get(&ws.id).is_none(),
-        "a closed workspace keeps no merge"
-    );
-    assert!(
-        core.config_stale.lock().get(&ws.id).is_none(),
-        "and no mark of one"
+        cached_config(&core, &ws).is_none() && cached_mark(&core, &ws).is_none(),
+        "a closed workspace keeps no merge, and no mark of one"
     );
     write_config_fixture(&project.path().join(".tau"), &project_layer("long"));
     let ws = open_ws(&core, project.path()).await;
@@ -207,17 +203,17 @@ async fn a_reload_that_reads_leaves_no_mark_on_the_merge_it_replaces() {
     write_config_fixture(&project.path().join(".tau"), &broken_layer("short"));
     core.reload_workspace_config(&ws);
     assert!(
-        core.config_stale.lock().contains_key(&ws.id),
+        cached_mark(&core, &ws).is_some(),
         "the failed reload marks the merge it left in place"
     );
     write_config_fixture(&project.path().join(".tau"), &project_layer("long"));
     reload_system_layer(&core);
     assert!(
-        core.config_stale.lock().get(&ws.id).is_none(),
+        cached_mark(&core, &ws).is_none(),
         "the mark of the dropped merge goes with it"
     );
     assert_eq!(
-        core.configs.lock().get(&ws.id).map(|c| c.cache.retention),
+        cached_config(&core, &ws).map(|c| c.cache.retention),
         Some(CacheRetention::Long),
         "the merge that refills reads the repaired layer, not the marked one"
     );
@@ -275,11 +271,11 @@ async fn a_cold_read_of_a_repaired_layer_leaves_no_mark_behind_it() {
     write_config_fixture(&project.path().join(".tau"), &broken_layer("short"));
     core.reload_workspace_config(&ws);
     assert!(
-        core.config_stale.lock().contains_key(&ws.id),
+        cached_mark(&core, &ws).is_some(),
         "the failed reload marks the workspace"
     );
     assert!(
-        core.configs.lock().get(&ws.id).is_none(),
+        cached_config(&core, &ws).is_none(),
         "a failed read writes nothing: the workspace has no merge to ride"
     );
     // The file is repaired before the watcher's debounce elapses, so the next read
@@ -292,7 +288,7 @@ async fn a_cold_read_of_a_repaired_layer_leaves_no_mark_behind_it() {
         "a config read off disk answers with no failure: {rejection:?}"
     );
     assert!(
-        core.config_stale.lock().get(&ws.id).is_none(),
+        cached_mark(&core, &ws).is_none(),
         "the mark of the merge this read replaces goes with it"
     );
     let live = manual_session(

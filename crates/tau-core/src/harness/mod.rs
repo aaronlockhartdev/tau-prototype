@@ -46,6 +46,7 @@ use tau_protocol::{
 };
 use tokio::sync::mpsc;
 
+mod config_state;
 mod dispatch;
 mod dispatch_commands;
 mod dispatch_sessions;
@@ -64,6 +65,7 @@ mod turn;
 mod watch;
 mod watchers;
 
+pub(crate) use config_state::{ConfigRejection, ConfigState};
 pub(crate) use forwarding::*;
 pub use launch::SessionRole;
 pub(crate) use snapshot::*;

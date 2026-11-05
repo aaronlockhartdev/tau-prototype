@@ -2,8 +2,9 @@
 //! batch-to-stale-dirs mapping, the dir listing, and the teardown.
 
 use super::{
-    Arc, Batch, Config, Core, Event, FileEntry, GitCache, Path, ProviderInfo, SystemEventKind,
-    WATCH_DEBOUNCE, Watcher, Workspace, WorkspaceState, config, dispatch, mpsc, state::CoreError,
+    Arc, Batch, Config, ConfigRejection, ConfigState, Core, Event, FileEntry, GitCache, Path,
+    ProviderInfo, SystemEventKind, WATCH_DEBOUNCE, Watcher, Workspace, WorkspaceState, config,
+    dispatch, mpsc, state::CoreError,
 };
 
 impl Core {
@@ -173,15 +174,14 @@ impl Core {
                 self.emit_config_rejected("", &e);
                 // Every open workspace's merge rides this layer, so a break here
                 // is a story each of them has to be told (#364). The mark is what
-                // a warm cache cannot give the boundary.
+                // a warm cache cannot give the boundary; a workspace with no
+                // entry gets the mark alone, and a cold read of it folds the
+                // system layer's mark in (#419).
                 let rejection =
                     Self::rejection_at(&self.system_dir_of().join(config::CONFIG_FILE), &e);
-                let mut stale = self.config_stale.lock();
-                // The system key carries the cause to the cold read of a
-                // workspace not yet open (#419).
-                stale.insert(String::new(), rejection.clone());
+                self.system.lock().mark_stale(rejection.clone());
                 for ws in &workspaces {
-                    stale.insert(ws.id.clone(), rejection.clone());
+                    self.mark_layer_stale(&ws.id, rejection.clone());
                 }
                 return;
             }
@@ -210,37 +210,52 @@ impl Core {
         match self.read_workspace_config(workspace) {
             Ok(config) => {
                 let rows = dispatch::provider_rows(&config);
-                self.configs.lock().insert(workspace.id.clone(), config);
-                self.config_stale.lock().remove(&workspace.id);
+                // The merge this reload produced: current by construction, so
+                // its entry carries no mark (#359).
+                self.configs.lock().insert(
+                    workspace.id.clone(),
+                    ConfigState::Current {
+                        config,
+                        rejection: None,
+                    },
+                );
                 if rows != before {
                     self.emit_provider_changed(&workspace.id);
                 }
             }
             Err(e) => {
-                self.config_stale
-                    .lock()
-                    .insert(workspace.id.clone(), Self::rejection_of(&e));
+                self.mark_layer_stale(&workspace.id, Self::rejection_of(&e));
                 self.emit_config_rejected(&workspace.id, &e);
             }
         }
     }
 
-    /// Swap the system entry in and drop the merged entries derived from it
+    /// The layer stopped reading for this workspace: its entry keeps the config
+    /// it runs on and gains the cause; a workspace with no entry gets the mark
+    /// alone, which its next cold read answers (#359).
+    fn mark_layer_stale(&self, workspace: &str, rejection: ConfigRejection) {
+        use std::collections::hash_map::Entry;
+        match self.configs.lock().entry(workspace.to_owned()) {
+            Entry::Occupied(mut entry) => entry.get_mut().mark_stale(rejection),
+            Entry::Vacant(slot) => {
+                slot.insert(ConfigState::Marked { rejection });
+            }
+        }
+    }
+
+    /// Swap the system layer in and drop the merged entries derived from it
+    /// Swap the system layer in and drop the merged entries derived from it
     /// (the reload's success path; the merged keys refill from the new system
-    /// entry at the next read). One lock scope: a reader between the two
-    /// writes would serve the old system layer under a new project layer. A merged
-    /// entry's staleness mark goes with it: the entry is gone, so the next read
-    /// meets the file as it is.
+    /// entry at the next read). A merged entry's staleness mark goes with it:
+    /// the entry is gone, so the next read meets the file as it is. A system
+    /// layer that reads well answers its own mark (#419).
     fn put_merged(&self, system: Config, workspaces: &[Workspace]) {
         let mut configs = self.configs.lock();
-        configs.insert(String::new(), system);
-        let mut stale = self.config_stale.lock();
         for ws in workspaces {
             configs.remove(&ws.id);
-            stale.remove(&ws.id);
         }
-        // A system layer that reads well clears its own mark (#419).
-        stale.remove(&String::new());
+        drop(configs);
+        self.system.lock().set_current(system);
     }
     fn emit_provider_changed(&self, workspace: &str) {
         self.emit(Event::System {

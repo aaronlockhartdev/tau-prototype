@@ -57,9 +57,9 @@ async fn a_broken_system_layer_is_stated_by_the_boot() {
         "the boot says what it refused to read: {stated:?}"
     );
     assert!(
-        core.configs
+        core.system
             .lock()
-            .get("")
+            .config()
             .is_some_and(|c| !c.providers.contains_key("fileonly")),
         "the boot keeps its defaults: the file's provider did not arrive"
     );
@@ -75,9 +75,9 @@ async fn a_readable_system_layer_states_nothing_at_boot() {
         "a readable layer gives the boot nothing to say"
     );
     assert!(
-        core.configs
+        core.system
             .lock()
-            .get("")
+            .config()
             .is_some_and(|c| c.providers.contains_key("fileonly")),
         "the readable layer's provider arrived: the boot rode the file"
     );

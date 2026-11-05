@@ -273,7 +273,7 @@ async fn a_broken_system_layer_is_recorded_by_the_sessions_running_under_it() {
     write_config_fixture(system.path(), SYSTEM);
     reload_system_layer(&core);
     assert!(
-        core.config_stale.lock().get(&ws.id).is_none(),
+        cached_mark(&core, &ws).is_none(),
         "the reload that reads clears the mark it marked"
     );
     core.rederive_turn(&live);

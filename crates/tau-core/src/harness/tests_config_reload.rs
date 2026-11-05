@@ -26,6 +26,7 @@ fn cached_rows(core: &Core, workspace: &Workspace) -> Vec<ProviderInfo> {
         .configs
         .lock()
         .get(&workspace.id)
+        .and_then(ConfigState::config)
         .cloned()
         .unwrap_or_default();
     dispatch::provider_rows(&cached)
