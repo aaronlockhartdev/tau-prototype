@@ -2,6 +2,7 @@ use super::{ChildState, SessionStore, SubagentInfo, Supervisor, TurnUsage, Waiti
 use crate::om;
 use crate::om_integration::OmState;
 use crate::session::Entry;
+use std::sync::Arc;
 use tau_protocol::EntryKind;
 use tau_protocol::payload::{ActivityEntry, ActivityGroup, ChildActivity};
 
@@ -22,9 +23,10 @@ impl Supervisor {
     }
 
     /// A child's structured inspection (the `subagent_state` tool and the
-    /// protocol's `subagent_state` command).
-    pub fn state_info(&self, name_or_id: &str) -> Option<SubagentInfo> {
-        let child = self.resolve(name_or_id)?.clone();
+    /// protocol's `subagent_state` command). `resolve` can re-adopt from
+    /// disk, so it takes the `Arc` this supervisor is owned by.
+    pub fn state_info(self: &Arc<Self>, name_or_id: &str) -> Option<SubagentInfo> {
+        let child = self.resolve(name_or_id)?;
         let (state, waiting_on) = match child.state() {
             ChildState::Idle { waiting_on } => (ChildState::Idle { waiting_on }, Some(waiting_on)),
             // The `QUESTION:` marker: the child is asking the user.
@@ -66,8 +68,8 @@ impl Supervisor {
 
     /// The child's activity window (the `subagent_activity` command, #203):
     /// a handle-scoped read of the free function below.
-    pub fn activity_window(&self, name_or_id: &str) -> Option<ChildActivity> {
-        let child = self.resolve(name_or_id)?.clone();
+    pub fn activity_window(self: &Arc<Self>, name_or_id: &str) -> Option<ChildActivity> {
+        let child = self.resolve(name_or_id)?;
         read_activity(&self.cwd, &child.session_id, &self.om)
     }
 }

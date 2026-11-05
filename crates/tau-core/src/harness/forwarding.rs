@@ -510,13 +510,14 @@ impl SubagentBridge for SessionSubagentBridge {
             items: live.agent.queued_items(),
         });
         live.stop.store(false, Ordering::SeqCst);
+        // The bridge owns the core (the `Arc` it was built with): a wake's
+        // turn start is never skipped, so a parked parent is always woken.
         if live
             .turn
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
-            && let Some(core) = self.core.self_arc()
         {
-            tokio::spawn(run_turn(core, live));
+            tokio::spawn(run_turn(Arc::clone(&self.core), live));
         }
     }
 }

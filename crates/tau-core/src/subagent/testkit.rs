@@ -336,7 +336,7 @@ pub(crate) fn wait_for(cond: impl Fn() -> bool) {
 
 /// Waits until the child is observed `done` and returns its state info
 /// (the observed output for assertions).
-pub(crate) fn wait_for_done(sup: &Supervisor, handle: &str) -> SubagentInfo {
+pub(crate) fn wait_for_done(sup: &Arc<Supervisor>, handle: &str) -> SubagentInfo {
     wait_for(|| {
         matches!(
             sup.state_info(handle).unwrap().state,
