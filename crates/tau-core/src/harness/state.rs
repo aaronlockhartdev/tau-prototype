@@ -577,10 +577,13 @@ impl Core {
 
     /// The workspace's skill registry, read from its own state (#28): discovered
     /// outlives a change. The one read site, so the cache cannot be missed on the
-    /// way in. Discovery runs with `workspaces` free — a first read walks the
-    /// skill dirs, and a workspace list should not queue behind it. A workspace
-    /// with no state (the cwd closed under this lookup) answers from the files:
-    /// the cache is the optimization, discovery is the record.
+    /// way in. A cold slot runs the producer and answers with what it built, so
+    /// discovery has one path: the reader never walks the skill dirs on its own
+    /// and never re-reads the key the writer just filled. Discovery runs with
+    /// `workspaces` free — a first read walks the skill dirs, and a workspace list
+    /// should not queue behind it. A workspace with no state (the cwd closed under
+    /// this lookup) answers from the files: the cache is the optimization,
+    /// discovery is the record.
     pub(crate) fn skills_of(&self, ws: &Workspace) -> Vec<SkillInfo> {
         if let Some(reg) = self
             .workspaces
@@ -590,32 +593,17 @@ impl Core {
         {
             return reg;
         }
-        let reg = self.discover_skills(ws);
-        if let Some(state) = self.workspaces.lock().get_mut(&ws.id) {
-            state.skills = Some(reg.clone());
-        }
-        reg
-    }
-    /// What the workspace's files describe as protocol rows: the discovery the
-    /// cache slot is filled with.
-    fn discover_skills(&self, ws: &Workspace) -> Vec<SkillInfo> {
-        crate::skills::discover(
-            self.system_dir.as_deref(),
-            self.home.as_deref(),
-            Path::new(&ws.cwd),
-        )
-        .iter()
-        .map(skill_info)
-        .collect()
+        self.refresh_skills(ws).iter().map(skill_info).collect()
     }
 
     /// Re-run discovery, replace the workspace's registry slot, and emit the
     /// full-state `SkillListChanged` (#31 — idempotent by construction, a lost
-    /// batch self-heals on the next `skill_list`). Shared by the watchers and
-    /// `build_live`: the slot is the one the dropdown and the `/skill:` lookup
-    /// read. A running session's prompt is not touched (frozen at build); new
-    /// sessions pick up the change at their own build. Returns the `Skill`s, not
-    /// the rows: launch's prompt catalog reads the bodies the rows drop.
+    /// batch self-heals on the next `skill_list`). Shared by the watchers,
+    /// `build_live`, and the cold read in `skills_of`: the slot is the one the
+    /// dropdown and the `/skill:` lookup read. A running session's prompt is not
+    /// touched (frozen at build); new sessions pick up the change at their own
+    /// build. Returns the `Skill`s, not the rows: launch's prompt catalog reads
+    /// the bodies the rows drop.
     pub(crate) fn refresh_skills(&self, ws: &Workspace) -> Vec<crate::skills::Skill> {
         let skills = crate::skills::discover(
             self.system_dir.as_deref(),
