@@ -57,6 +57,7 @@ export default [
       'svelte/lib/store/surface.test.ts',
       'svelte/lib/store/events.test.ts',
       'svelte/lib/store/files-pane.test.ts',
+      'svelte/lib/store/viewer.test.ts',
       'svelte/lib/store/providers.test.ts',
       'svelte/lib/store/session-archive.test.ts',
       'svelte/lib/store/live-stream.test.ts',
