@@ -148,6 +148,16 @@ impl SessionStore {
         // can grow the file out from under the in-memory id set: refresh
         // before the parent check, or a valid parent reads "unknown".
         self.refresh_if_grown()?;
+        // The id set, refreshed above, is the file's: an id is never written
+        // twice. Minting cannot close this — the counter is per-handle, so a
+        // second store over the same file mints an id the first store takes
+        // (the duplicate id the parent-chain walk loops on, the 80 GB shape).
+        if self.ids.contains(&entry.id) {
+            return Err(Error::Other(format!(
+                "entry id {} already exists — the append was refused",
+                entry.id
+            )));
+        }
         if let Some(p) = parent
             && !self.ids.contains(p)
         {
@@ -259,7 +269,7 @@ impl SessionStore {
         payload: Value,
         parent: Option<&str>,
     ) -> Result<Entry, Error> {
-        let id = self.mint_id();
+        let id = self.mint_id()?;
         self.append_entry(&id, kind, payload, parent)
     }
 

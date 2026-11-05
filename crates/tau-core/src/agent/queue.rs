@@ -94,19 +94,33 @@ impl AgentSession {
         // The turn loop's dequeue writes the line under the same id, after
         // that line has landed.
         let entry_id = if steering {
-            let id = inner.store.mint_id();
-            inner.store.upsert_event(
-                &id,
-                EntryKind::User,
-                tau_protocol::payload::UserPayload {
-                    text: text.clone(),
-                    lane: "steering".to_owned(),
-                    source: Some(source.clone()),
-                    skill: None,
+            // A mint that fails has no id to give the report, so the item is
+            // queued with none and the dequeue appends it under a fresh one
+            // (`msg.entry_id: None`): the entry lands, out of id order behind
+            // the in-flight assistant — cosmetic, and the one shape that
+            // cannot issue a duplicate id. The queue's own signature is `()`
+            // (its callers forward a send, which cannot fail), so the
+            // failure is recorded here, not propagated.
+            match inner.store.mint_id() {
+                Ok(id) => {
+                    inner.store.upsert_event(
+                        &id,
+                        EntryKind::User,
+                        tau_protocol::payload::UserPayload {
+                            text: text.clone(),
+                            lane: "steering".to_owned(),
+                            source: Some(source.clone()),
+                            skill: None,
+                        }
+                        .to_value(),
+                    );
+                    Some(id)
                 }
-                .to_value(),
-            );
-            Some(id)
+                Err(e) => {
+                    tracing::warn!("steering entry id not minted: {e}");
+                    None
+                }
+            }
         } else {
             None
         };

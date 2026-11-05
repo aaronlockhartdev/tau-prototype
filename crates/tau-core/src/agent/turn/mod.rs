@@ -142,7 +142,7 @@ impl AgentSession {
             // the streamed deltas and the final append share the one id.
             let (entry_id, delta) = {
                 let mut inner = self.inner.lock();
-                (inner.store.mint_id(), inner.stream_delta_hook.clone())
+                (inner.store.mint_id()?, inner.stream_delta_hook.clone())
             };
             let mut sink = StreamEntrySink::new(
                 entry_id.clone(),
@@ -543,7 +543,7 @@ impl AgentSession {
     }
 
     pub(super) fn append(&self, kind: EntryKind, payload: Value) -> Result<(), AgentError> {
-        let id = self.inner.lock().store.mint_id();
+        let id = self.inner.lock().store.mint_id()?;
         self.append_id(&id, kind, payload)
     }
 

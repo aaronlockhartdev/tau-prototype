@@ -218,15 +218,17 @@ impl SessionStore {
     /// The next entry id, reserved now (the single id counter, ADR-0008):
     /// a wire-only re-emission can be minted before its file line lands, and
     /// the later append reuses the same id.
-    pub fn mint_id(&mut self) -> String {
-        // Mint only after the file is known: an unloaded store starts at
-        // 0 and would re-issue ids an existing session already holds
-        // (duplicate id -> cyclic parent chain; see the live-om 80GB
-        // regression). A failed open surfaces on the following append.
-        let _ = self.ensure_open();
+    ///
+    /// The open is the invariant, not a step to try: an id only means
+    /// "past this file's ids" once the file is read, so a failed open is a
+    /// failed mint. Swallowing it issued `00000001` — every session file's
+    /// first id — from an unread store, and the duplicate id is what the
+    /// parent-chain walk loops on (the live-om 80 GB runaway).
+    pub fn mint_id(&mut self) -> Result<String, Error> {
+        self.ensure_open()?;
         let id = format!("{:08}", self.next);
         self.next += 1;
-        id
+        Ok(id)
     }
 
     fn new_entry(
