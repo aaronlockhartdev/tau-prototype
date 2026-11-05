@@ -550,6 +550,7 @@ partially applied.
 - `providers.{provider}.models.{model} declares max_tokens = 0; the output cap must be positive` — a declared cap of `0` arms a gate that can answer nothing (#338)
 - `subagents.fleet_soft_bound ({soft}) must not exceed fleet_hard_cap ({hard})`
 - `providers.{provider}: a provider name must not contain '/'; an id's prefix is its provider's name` — a name that makes an id's prefix ambiguous (#354)
+- `providers.{provider}.models."": a model key must not be empty; a provider's first key is the model a session opens on` — a session opened on the empty key records a model change to nothing at every reopen (Add6-A1)
 - `thinking.levels.{key}: no provider declares it as a model, so the level is never read` (#354)
 - `{path} names [om] buffer_tokens, which is retired: … buffer_increment is the interval` — a layer naming the retired key (#408)
 - `{path} names [om] om_model, which is renamed: the section is [om], the key is model` — move the value under `model` (#407)

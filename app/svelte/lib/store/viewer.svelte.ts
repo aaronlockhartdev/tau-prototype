@@ -6,6 +6,22 @@ import { errText } from '../wire/errors';
 import { closeIn, openIn } from '../rules/openfiles';
 import { ensurePane, store } from './state.svelte';
 
+// The request the shown content belongs to: the key and the generation it was
+// issued under, minted where the round trip is issued. This is `openedFor`'s
+// shape (rules/windowing.ts:27) and the `?? 0) + 1` bump of
+// rules/sessions.ts:254 — one pair, advanced by every issue.
+//
+// The pair is what a response answers, not the tab's fields. A tab switch and
+// a refetch of the tab already showing are both new requests; comparing
+// `activeFile.workspace`/`.path` sees only the first, because a refetch leaves
+// both unchanged — so the watcher's own re-read of the shown file was never
+// guarded. The round trip is two awaits deep (file_read, then git_show), so
+// responses land in the order the core answers, and the newest request can
+// lose to the one it replaced.
+let issued = 0;
+let current: { key: string; gen: number } | null = null;
+const keyOf = (ws: string, path: string): string => `${ws}\n${path}`;
+
 // Open a file in the viewer: adds it to the workspace's open set (a no-op if
 // already open), makes it the active tab, and switches the center to the file
 // viewer. pane.center is what keeps the files alive across a switch to the
@@ -19,6 +35,7 @@ export function openFile(ws: string, path: string, ignored: boolean, size: numbe
 }
 
 export function resetActiveFile(): void {
+  current = null;
   store.activeFile = null;
   store.activeFileNew = null;
   store.activeFileBase = null;
@@ -82,19 +99,24 @@ export function reconcileActiveFile(ws: string): void {
 }
 
 // The active tab's content + git base. A file_read rejection is a real reason
-// (binary / unreadable), not an empty file: it is surfaced, not swallowed. A
-// stale fetch must not clobber the tab the user moved on from (field compare,
-// since the $state proxy breaks ===).
+// (binary / unreadable), not an empty file: it is surfaced, not swallowed.
 export async function fetchActiveFile(ws: string, path: string): Promise<void> {
+  const key = keyOf(ws, path);
+  const gen = (issued += 1);
+  current = { key, gen };
   const entry = (store.openFiles[ws] ?? []).find((f) => f.path === path);
   const ignored = entry?.ignored ?? false;
   const size = entry?.size ?? 0;
+  // A response belongs to the request that produced it: every write checks the
+  // generation it was issued under, so the code that replaces this request
+  // needs no new guard site.
+  const answers = (): boolean => current?.key === key && current.gen === gen;
   let file: string;
   try {
     const out = await command({ type: 'file_read', workspace: ws, path, offset: null, limit: null });
     file = out.kind === 'file' ? out.file.text : '';
   } catch (e) {
-    if (store.activeFile?.workspace !== ws || store.activeFile?.path !== path) return;
+    if (!answers()) return;
     store.activeFileNew = null;
     store.activeFileBase = null;
     store.activeFileError = isBinaryError(errText(e)) ? `binary file · ${size} bytes` : `cannot read: ${errText(e)}`;
@@ -105,7 +127,7 @@ export async function fetchActiveFile(ws: string, path: string): Promise<void> {
   const base = ignored
     ? file
     : await command({ type: 'git_show', workspace: ws, path }).then((o) => (o.kind === 'git_show' ? o.text : '')).catch(() => '');
-  if (store.activeFile?.workspace !== ws || store.activeFile?.path !== path) return;
+  if (!answers()) return;
   store.activeFileNew = file;
   store.activeFileBase = base;
   store.activeFileError = null;
