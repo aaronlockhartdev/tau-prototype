@@ -209,37 +209,53 @@ function rustStructs(src) {
   const out = {};
   const clean = stripComments(src);
   for (const m of clean.matchAll(/pub struct (\w+)\s*\{/g)) {
-    const name = m[1];
-    // The struct's own serde attr (rename_all) names the fields' wire casing.
-    const structSerde = [...clean.slice(Math.max(0, m.index - 300), m.index).matchAll(/#\[serde\(([^)]*)\)\]/g)].pop();
-    const renameAllRaw = structSerde ? structSerde[1].split(',').find((a) => a.includes('rename_all')) : undefined;
-    const renameAll = renameAllRaw ? renameAllRaw.split('=')[1]?.trim().replace(/"/g, '') : '';
-    const body = bodyAfter(clean, m.index);
-    const fields = {};
-    let searchFrom = 0;
-    for (const part of topParts(body)) {
-      const p2 = part
-        .split('\n')
-        .filter((l) => !l.trimStart().startsWith('#'))
-        .join(' ')
-        .replace(/^\s*pub\s+/, '');
-      const fm = p2.match(/^(\w+)\s*:\s*([\s\S]+)$/);
-      if (!fm) continue;
-      // Attributes since the previous field: an unbounded window would let
-      // a renamed field's serde line be stolen by the next field.
-      const idx = body.indexOf(`${fm[1]}:`, searchFrom);
-      const attrs = [...body.slice(searchFrom, idx).matchAll(/#\[serde\(([^)]*)\)\]/g)];
-      const last = attrs.length ? attrs[attrs.length - 1][1].split(',') : [];
-      // A field's own rename (or the struct's rename_all) is the wire name
-      // the TS mirror is checked under.
-      const renameRaw = last.find((a) => /^rename\s*=/.test(a.trim()));
-      const rename = renameRaw ? renameRaw.split('=')[1].trim().replace(/"/g, '') : '';
-      fields[rename || renameAllName(fm[1], renameAll)] = { type: fm[2].trim(), skip: last.some((a) => a.includes('skip')) };
-      searchFrom = idx + fm[1].length + 1;
-    }
-    out[name] = fields;
+    out[m[1]] = structFields(clean, m.index);
   }
   return out;
+}
+
+// The fields of one struct occurrence, under the casing its serde attrs name.
+// `#[serde(into = "Wire")]` puts the wire shape in a sibling struct: the TS
+// mirror is checked against what serde emits, not what the type stores (Usage
+// stores its parts; UsageWire emits the sum they imply).
+function structFields(clean, at, hops = 0) {
+  const pre = [...clean.slice(Math.max(0, at - 300), at).matchAll(/#\[serde\(([^)]*)\)\]/g)].pop();
+  const attrs = pre ? pre[1].split(',') : [];
+  const renameAll = attrValue(attrs, 'rename_all');
+  const intoRaw = attrs.map((a) => a.trim()).find((a) => a.startsWith('into ='));
+  const body = bodyAfter(clean, at);
+  const fields = {};
+  let searchFrom = 0;
+  for (const part of topParts(body)) {
+    const p2 = part
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('#'))
+      .join(' ')
+      .replace(/^\s*pub\s+/, '');
+    const fm = p2.match(/^(\w+)\s*:\s*([\s\S]+)$/);
+    if (!fm) continue;
+    // Attributes since the previous field: an unbounded window would let
+    // a renamed field's serde line be stolen by the next field.
+    const idx = body.indexOf(`${fm[1]}:`, searchFrom);
+    const fattrs = [...body.slice(searchFrom, idx).matchAll(/#\[serde\(([^)]*)\)\]/g)];
+    const last = fattrs.length ? fattrs[fattrs.length - 1][1].split(',') : [];
+    // A field's own rename (or the struct's rename_all) is the wire name
+    // the TS mirror is checked under.
+    const rename = attrValue(last, 'rename');
+    fields[rename || renameAllName(fm[1], renameAll)] = { type: fm[2].trim(), skip: last.some((a) => a.includes('skip')) };
+    searchFrom = idx + fm[1].length + 1;
+  }
+  if (!intoRaw || hops > 0) return fields;
+  const wire = intoRaw.split('=')[1].trim().replace(/"/g, '');
+  const wm = clean.match(new RegExp(`\\bstruct ${wire}\\s*\\{`));
+  if (!wm) throw new Error(`struct: #[serde(into = "${wire}")] names no struct in this file`);
+  return structFields(clean, wm.index, hops + 1);
+}
+
+// A serde attr's quoted value (`rename_all = "camelCase"` -> camelCase).
+function attrValue(attrs, key) {
+  const raw = attrs.find((a) => a.includes(key));
+  return raw ? raw.split('=')[1]?.trim().replace(/"/g, '') : '';
 }
 
 // The struct's rename_all applied to a snake_case field name (the crate's
