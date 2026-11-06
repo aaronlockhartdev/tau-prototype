@@ -30,6 +30,28 @@ impl Drop for TurnSettleGuard {
 
 impl std::panic::RefUnwindSafe for TurnSettleGuard {}
 
+/// The delta read's failure, named on the GUI's error path — the same shape
+/// `process()`'s own failure rides. The turn's record is unreadable, so its
+/// implied events cannot be derived; swallowing that is the shape that leaves
+/// a session showing running forever (#261/#82).
+fn delta_read_failed(
+    core: &Core,
+    workspace: &str,
+    session: &str,
+    which: &str,
+    e: &crate::session::Error,
+) {
+    core.emit(Event::System {
+        workspace: workspace.to_owned(),
+        session: Some(session.to_owned()),
+        kind: SystemEventKind::Error {
+            message: format!(
+                "session {session} turn record unreadable — the {which} read of the session log failed: {e}"
+            ),
+        },
+    });
+}
+
 /// The post-turn reconciliation (spec §8 idempotent updates): the session
 /// file is the record; the events it implies are derived here, after
 /// `process()` drained the queue.
@@ -92,7 +114,31 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
         drop(settle);
         return;
     }
-    let start = store.leaf().ok().flatten().map(|e| e.id);
+    // The cursor comes from the store's mirror, not the file: `open` proved
+    // the header's leaf id, so a leaf read that fails is a file that changed
+    // shape under the store (a truncation, a foreign rewrite). `Ok(None)` is
+    // the genuine first turn, whose delta is the whole log.
+    // One locked scope: two meta locks in one expression would be a
+    // same-thread re-entrant deadlock (the first guard lives until the
+    // statement ends).
+    let (workspace, session) = {
+        let meta = live.meta.lock();
+        (meta.workspace.clone(), meta.id.clone())
+    };
+    let start = match store.leaf_cached() {
+        Ok(entry) => entry.map(|e| e.id),
+        Err(e) => {
+            delta_read_failed(&core, &workspace, &session, "leaf", &e);
+            // The send is accepted and stays in the agent's queue: the GUI's
+            // queue is its projection, so it shows the message the turn did
+            // not run (the open-failure path's shape above).
+            if live.agent.first_pending().is_some() {
+                core.emit_queue(&live);
+            }
+            drop(settle);
+            return;
+        }
+    };
     // The provider this session's agent calls through is its own, so its call
     // log is the record of the calls the turn made — read through the trait so
     // a child's call ids are the child's (#175).
@@ -100,32 +146,32 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
     let calls_before = log.calls.lock().len();
 
     if let Err(e) = live.agent.process().await {
-        // One locked scope: two meta locks in one expression would be a
-        // same-thread re-entrant deadlock (the first guard lives until the
-        // statement ends).
-        let (workspace, id) = {
-            let meta = live.meta.lock();
-            (meta.workspace.clone(), meta.id.clone())
-        };
         core.emit(Event::System {
-            workspace,
-            session: Some(id),
+            workspace: workspace.clone(),
+            session: Some(session.clone()),
             kind: SystemEventKind::Error {
                 message: e.to_string(),
             },
         });
     }
 
-    let new: Vec<Entry> = match start {
-        Some(cursor) => store.entries_since(&cursor).unwrap_or_default(),
-        // No cursor means the session's first turn: the whole log is its
-        // delta, and the store has no read wider than a cursor and narrower
-        // than a position range (#302, spec §3).
-        None => store.entries_range(0, usize::MAX).unwrap_or_default(),
+    // The turn's entries are appended by the agent's store, so this store's
+    // mirror is current only to the pre-turn file: the refresh takes the
+    // turn's lines in (the shape the snapshot's reads run, #316).
+    let new = store.refresh_if_grown().and_then(|()| match start {
+        Some(cursor) => store.entries_since_cached(&cursor),
+        None => store
+            .entries_range_cached(0, usize::MAX)
+            .map(|rows| rows.into_iter().map(|(entry, _)| entry).collect()),
+    });
+    let new: Vec<Entry> = match new {
+        Ok(entries) => entries,
+        Err(e) => {
+            delta_read_failed(&core, &workspace, &session, "delta", &e);
+            drop(settle);
+            return;
+        }
     };
-
-    let workspace = live.meta.lock().workspace.clone();
-    let session = live.meta.lock().id.clone();
     let mut assistant_index = 0usize;
     let mut queue_changed = false;
     for entry in &new {
@@ -224,10 +270,10 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
         }
     }
 
-    // The active branch is what the loop appended against.
-    if let Ok(leaf) = store.leaf()
-        && let Some(leaf) = leaf
-    {
+    // The active branch is what the loop appended against. The mirror is
+    // current past this turn's appends (the delta's refresh took them in), so
+    // the leaf needs no file read here.
+    if let Ok(Some(leaf)) = store.leaf_cached() {
         live.meta.lock().leaf = Some(leaf.id);
     }
     if queue_changed {
