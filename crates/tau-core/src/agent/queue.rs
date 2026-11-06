@@ -78,14 +78,17 @@ impl AgentSession {
     /// where a follow-up would splice it into a later, unrelated turn.
     /// An idle parent degrades to the next turn (the wake starts one).
     pub fn send_notified_steer(&self, text: impl Into<String>, source: String) {
-        self.queue_notified(text, Lane::Steering, source);
+        self.queue_notified(text, source);
     }
 
-    fn queue_notified(&self, text: impl Into<String>, lane: Lane, source: String) {
+    /// Queue a notified steering report: a child's report while the parent's
+    /// turn is in flight (the lane is steering by construction — the only
+    /// producer is the notification wake, so no lane parameter stands
+    /// between the wake and the entry's `lane` payload).
+    fn queue_notified(&self, text: impl Into<String>, source: String) {
         let mut inner = self.inner.lock();
         self.stop.store(false, Ordering::SeqCst);
         let text = text.into();
-        let steering = matches!(lane, Lane::Steering);
         // The report's entry is minted now and its upsert fires now — the
         // GUI shows it while the parent's turn is in flight — but the file
         // line is NOT written here: a queue-time write would land ahead of
@@ -93,43 +96,39 @@ impl AgentSession {
         // the call returns), inverting file order against id order (#148).
         // The turn loop's dequeue writes the line under the same id, after
         // that line has landed.
-        let entry_id = if steering {
-            // A mint that fails has no id to give the report, so the item is
-            // queued with none and the dequeue appends it under a fresh one
-            // (`msg.entry_id: None`): the entry lands, out of id order behind
-            // the in-flight assistant — cosmetic, and the one shape that
-            // cannot issue a duplicate id. The queue's own signature is `()`
-            // (its callers forward a send, which cannot fail), so the
-            // failure is recorded here, not propagated.
-            match inner.store.mint_id() {
-                Ok(id) => {
-                    inner.store.upsert_event(
-                        &id,
-                        EntryKind::User,
-                        tau_protocol::payload::UserPayload {
-                            text: text.clone(),
-                            lane: "steering".to_owned(),
-                            source: Some(source.clone()),
-                            skill: None,
-                        }
-                        .to_value(),
-                    );
-                    Some(id)
-                }
-                Err(e) => {
-                    tracing::warn!("steering entry id not minted: {e}");
-                    None
-                }
+        // A mint that fails has no id to give the report, so the item is
+        // queued with none and the dequeue appends it under a fresh one
+        // (`msg.entry_id: None`): the entry lands, out of id order behind
+        // the in-flight assistant — cosmetic, and the one shape that
+        // cannot issue a duplicate id. The queue's own signature is `()`
+        // (its callers forward a send, which cannot fail), so the
+        // failure is recorded here, not propagated.
+        let entry_id = match inner.store.mint_id() {
+            Ok(id) => {
+                inner.store.upsert_event(
+                    &id,
+                    EntryKind::User,
+                    tau_protocol::payload::UserPayload {
+                        text: text.clone(),
+                        lane: "steering".to_owned(),
+                        source: Some(source.clone()),
+                        skill: None,
+                    }
+                    .to_value(),
+                );
+                Some(id)
             }
-        } else {
-            None
+            Err(e) => {
+                tracing::warn!("steering entry id not minted: {e}");
+                None
+            }
         };
         // The id is minted before the push: the push borrows the queue.
         let id = new_queue_id(&mut inner.queue_seq);
         inner.queue.push_back(Queued {
             id,
             text,
-            lane,
+            lane: Lane::Steering,
             source: Some(source),
             skill: None,
             entry_id,
