@@ -6160,6 +6160,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tau-core",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
