@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::harness::testkit::*;
+use tau_protocol::OmStatusKind;
 
 #[tokio::test]
 async fn closing_a_session_stops_its_in_flight_turn() {
@@ -291,15 +292,11 @@ async fn a_live_om_run_emits_om_status_events() {
         let tx = core.events_tx.clone();
         let ws = workspace.id.clone();
         let csid = sid.clone();
-        agent.set_om_status_hook(Some(Arc::new(move |kind: &str| {
+        agent.set_om_status_hook(Some(Arc::new(move |kind| {
             let _ = tx.try_send(Event::OmStatus {
                 workspace: ws.clone(),
                 session: csid.clone(),
-                kind: match kind {
-                    "observing" => OmStatusKind::Observing,
-                    "reflecting" => OmStatusKind::Reflecting,
-                    _ => OmStatusKind::Idle,
-                },
+                kind,
             });
         })));
     }

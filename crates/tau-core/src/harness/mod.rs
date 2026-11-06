@@ -41,8 +41,8 @@ use tau_protocol::snapshot::{
 };
 use tau_protocol::{
     AgentType, Command, CommandOutput, ContextMode, Event, FileEntry, FileText, MessageLane,
-    OmStatusKind, ProtocolError, ProviderInfo, SkillInfo, SubagentEventKind, SubagentInfo,
-    SubagentState, SystemEventKind, Usage,
+    ProtocolError, ProviderInfo, SkillInfo, SubagentEventKind, SubagentInfo, SubagentState,
+    SystemEventKind, Usage,
 };
 use tokio::sync::mpsc;
 

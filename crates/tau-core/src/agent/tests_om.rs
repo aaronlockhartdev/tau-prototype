@@ -195,17 +195,22 @@ async fn om_runs_notify_the_status_hook_in_order() {
         subagents: None,
         child: None,
     });
-    let kinds = Arc::new(Mutex::new(Vec::<String>::new()));
+    let kinds = Arc::new(Mutex::new(Vec::<OmStatusKind>::new()));
     let k = kinds.clone();
-    agent.set_om_status_hook(Some(Arc::new(move |kind: &str| {
-        k.lock().push(kind.to_owned());
+    agent.set_om_status_hook(Some(Arc::new(move |kind| {
+        k.lock().push(kind);
     })));
     agent.send("go1", Lane::FollowUp);
     agent.send("go2", Lane::FollowUp);
     agent.process().await.unwrap();
     assert_eq!(
         *kinds.lock(),
-        vec!["observing", "idle", "reflecting", "idle"]
+        vec![
+            OmStatusKind::Observing,
+            OmStatusKind::Idle,
+            OmStatusKind::Reflecting,
+            OmStatusKind::Idle
+        ]
     );
 }
 

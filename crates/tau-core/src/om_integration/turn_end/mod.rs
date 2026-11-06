@@ -5,6 +5,7 @@ use super::{
     boundary_ts, entry_text, idle_gap_secs, om, transcript,
 };
 use crate::provider::{InputEntry, InputMessage, ResponseRequest, TurnProviderRef};
+use tau_protocol::OmStatusKind;
 
 /// Whether the observation cursor already covers a buffered chunk: the chunk's
 /// range ends at or behind the cursor. The ids are minted session-sequentially
@@ -272,9 +273,9 @@ impl OmState {
             // emitter, absent in tests and on children).
             if let Some(hook) = hook {
                 let kind = match &action {
-                    TurnEndAction::Done => "idle",
-                    TurnEndAction::Observe { .. } => "observing",
-                    TurnEndAction::Reflect { .. } => "reflecting",
+                    TurnEndAction::Done => OmStatusKind::Idle,
+                    TurnEndAction::Observe { .. } => OmStatusKind::Observing,
+                    TurnEndAction::Reflect { .. } => OmStatusKind::Reflecting,
                 };
                 hook(kind);
             }

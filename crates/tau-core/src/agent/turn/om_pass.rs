@@ -1,6 +1,6 @@
 use crate::agent::{AgentError, AgentSession, Inner, OmRoute, SessionStore, TurnProviderRef};
 use crate::om_integration::{OmError, OmStage};
-use tau_protocol::Diagnostic;
+use tau_protocol::{Diagnostic, OmStatusKind};
 
 /// The stage a compaction failure belongs to (#338): the provider arm carries
 /// the stage the retry loop ran under; a storage failure names the store, the
@@ -121,7 +121,7 @@ impl AgentSession {
         if let Err(e) = &outcome {
             self.record_om_failure(om_failure_stage(e), e);
             if let Some(hook) = &hook {
-                hook("idle");
+                hook(OmStatusKind::Idle);
             }
         }
         self.write_back_om(state);
@@ -215,7 +215,7 @@ impl AgentSession {
             // Close the status gauge: a failed pass never reaches the
             // loop's `Done` arm, the only place it goes idle.
             if let Some(hook) = &hook {
-                hook("idle");
+                hook(OmStatusKind::Idle);
             }
         }
         self.write_back_om(state);

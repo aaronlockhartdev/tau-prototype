@@ -19,6 +19,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tau_protocol::OmStatusKind;
 #[cfg(test)]
 pub(crate) use tau_protocol::{Diagnostic, EntryKind};
 
@@ -316,10 +317,12 @@ const fn lane_name(lane: Lane) -> &'static str {
     }
 }
 
-/// The OM run's status callback: the activity kind as a string
-/// ("observing" / "reflecting" / "idle") — the app shapes it into the
-/// protocol event.
-pub(crate) type OmStatusHook = Arc<dyn Fn(&str) + Send + Sync>;
+/// The OM run's status callback: the activity kind a memory pass is on. The
+/// producer names it from `TurnEndAction`, the app forwards it into the
+/// protocol event — the kind travels as the protocol's own `OmStatusKind`, so
+/// no string stands between the two ends (4B). Core stays transport-free: the
+/// hook carries the kind, not the event.
+pub(crate) type OmStatusHook = Arc<dyn Fn(OmStatusKind) + Send + Sync>;
 
 /// Fired when the lane queue changes mid-turn (a steering/force message is
 /// consumed): the app re-emits the queue snapshot so the GUI's queue pane
@@ -372,8 +375,8 @@ pub(crate) struct Inner {
     /// The endpoint the memory passes run at, from `[om].om_model` (#348).
     pub(crate) om_route: OmRoute,
     /// The OM-run observer (the app emits the protocol's `om_status` event
-    /// from it): core is transport-free, so the hook takes the kind string,
-    /// not the event. `None` = no observer (tests, children).
+    /// from it): core is transport-free, so the hook takes the kind, not the
+    /// event. `None` = no observer (tests, children).
     om_status_hook: Option<OmStatusHook>,
     /// Wire-only entry upserts (ADR-0008): a re-emitted entry before its
     /// file line lands (the tool's call phase, the discrete cards); the

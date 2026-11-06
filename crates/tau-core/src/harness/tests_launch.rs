@@ -3,7 +3,7 @@
 
 use super::{
     AgentSession, Command, Core, CoreBuilder, EntryKind, Event, SessionRole, SessionStore,
-    testkit::{collect_events, open_ws, providers, route},
+    testkit::{collect_events, om_core, open_ws, providers, route},
 };
 use crate::agent_type::builtin_general;
 use crate::config::{Om, Provider, SubAgents, ToolBatchPolicy};
@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
+use tau_protocol::OmStatusKind;
 
 fn canned_provider() -> crate::provider::TurnProviderRef {
     crate::provider::canned("data: [DONE]\n\n")
@@ -77,6 +78,166 @@ fn agent_sid(agent: &AgentSession) -> String {
     // The store is consumed by the constructor: the id is re-read through
     // the session's own store.
     agent.with_store(|s| s.id().to_owned())
+}
+
+/// The shipped `om_status` wiring (`wire_events`): a launched root session's
+/// memory pass reaches the event pipe as the protocol's own kind, in the
+/// pass's order. The hook is a pass-through (4B) — this is the only leg that
+/// can tell it dropped a kind on the floor.
+#[tokio::test]
+async fn a_launched_root_session_emits_om_status_through_the_wired_hook() {
+    let om = crate::config::Om {
+        model: String::new(),
+        om_model: None,
+        generation: crate::config::GenerationProfile::default(),
+        observe_threshold: 1,
+        reflect_threshold: 40_000,
+        buffer_increment: 1,
+        buffer_tokens: None,
+        retries: crate::config::OmRetries::default(),
+    };
+    let (core, _system) = om_core(&om);
+    let dir = tempfile::tempdir().unwrap();
+    let ws = open_ws(&core, dir.path()).await;
+    let store = fresh_store(dir.path(), &SessionStore::new_session_id());
+    let collected = collect_events(&core);
+
+    let config = core.system_config();
+    // The observer's canned answer: an observation the commit accepts, so the
+    // pass runs to `Done` and the gauge closes at `Idle`.
+    let body = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: {{\"type\":\"response.output_text.delta\",\"delta\":\"{text}\"}}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"usage\":{{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}}}}\n\n",
+        text = "<observations>observed</observations>"
+    );
+    let agent = AgentSession::launch(
+        store,
+        SessionRole::Root {
+            core: core.clone(),
+            workspace: ws.clone(),
+            config: config.clone(),
+            provider: crate::provider::canned(&body),
+            base_prompt: None,
+            route: route(&config, "model"),
+            stop: Arc::new(AtomicBool::new(false)),
+        },
+    )
+    .unwrap();
+    let sid = agent_sid(&agent);
+
+    agent.send("go", crate::agent::Lane::FollowUp);
+    agent.process().await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    loop {
+        let kinds: Vec<OmStatusKind> = collected
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                Event::OmStatus { session, kind, .. } if session == &sid => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        if kinds.len() >= 2 {
+            assert_eq!(kinds, vec![OmStatusKind::Observing, OmStatusKind::Idle]);
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the wired hook emitted no om_status for the launched session: {kinds:?}"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// A provider that answers main turns and kills every memory round-trip: the
+/// permanent 400 a dead `om_model` route returns (#338), so the turn-end pass
+/// fails and never reaches the loop's `Done` arm.
+fn dead_om_provider() -> crate::provider::TurnProviderRef {
+    struct DeadOm;
+    impl crate::provider::TurnProvider for DeadOm {
+        fn call<'a>(
+            &self,
+            request: &crate::provider::ResponseRequest,
+            sink: &'a mut dyn crate::provider::TurnSink,
+        ) -> crate::provider::ProviderTurn<'a> {
+            if request
+                .instructions()
+                .is_some_and(|i| i.starts_with("You are Tau") || i.starts_with("be terse"))
+            {
+                return crate::provider::canned(&crate::agent::testkit::sse("ok", &[]))
+                    .call(request, sink);
+            }
+            Box::pin(async {
+                Err(crate::provider::ProviderError::Status {
+                    status: 400,
+                    body: "no model named dev/om-model".to_owned(),
+                })
+            })
+        }
+    }
+    Arc::new(DeadOm)
+}
+
+/// The gauge closes when the pass dies: a launched root whose memory round-trip
+/// fails must still report `idle` on the wire — the pass never reaches the
+/// loop's `Done` arm, so that arm is the only place it goes idle (#86).
+#[tokio::test]
+async fn a_launched_root_session_closes_the_gauge_when_the_pass_fails() {
+    let om = crate::config::Om {
+        model: String::new(),
+        om_model: None,
+        generation: crate::config::GenerationProfile::default(),
+        observe_threshold: 1,
+        reflect_threshold: 40_000,
+        buffer_increment: 1,
+        buffer_tokens: None,
+        retries: crate::config::OmRetries::default(),
+    };
+    let (core, _system) = om_core(&om);
+    let dir = tempfile::tempdir().unwrap();
+    let ws = open_ws(&core, dir.path()).await;
+    let store = fresh_store(dir.path(), &SessionStore::new_session_id());
+    let collected = collect_events(&core);
+
+    let config = core.system_config();
+    let agent = AgentSession::launch(
+        store,
+        SessionRole::Root {
+            core: core.clone(),
+            workspace: ws.clone(),
+            config: config.clone(),
+            provider: dead_om_provider(),
+            base_prompt: None,
+            route: route(&config, "model"),
+            stop: Arc::new(AtomicBool::new(false)),
+        },
+    )
+    .unwrap();
+    let sid = agent_sid(&agent);
+
+    agent.send("go", crate::agent::Lane::FollowUp);
+    agent.process().await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    loop {
+        let kinds: Vec<OmStatusKind> = collected
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                Event::OmStatus { session, kind, .. } if session == &sid => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        if kinds.len() >= 2 {
+            assert_eq!(kinds, vec![OmStatusKind::Observing, OmStatusKind::Idle]);
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a failed pass left the gauge open on the wired hook: {kinds:?}"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]

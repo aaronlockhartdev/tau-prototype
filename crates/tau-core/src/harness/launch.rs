@@ -2,14 +2,14 @@
 //! `AgentSession`. The role carries the wiring defaults the five
 //! construction sites used to assemble by hand — the bridge↔supervisor
 //! cycle, the parameter assembly, and the post-construction hook wiring
-//! (kind-string → event shaping) all live here, not at the call sites.
+//! (kind → event shaping) all live here, not at the call sites.
 
 use super::{
     AgentSession, Arc, AtomicBool, ChildProviderFactory, Config, Core, Event,
-    ForwardingChildFactory, OmStatusKind, Ordering, Path, PathBuf, ProtocolError, SessionParams,
-    SessionStore, SessionSubagentBridge, SubagentBridge, Supervisor, SupervisorParams,
-    TurnChildDriver, TurnConfig, Value, ViewEntry, Workspace, context, derive_turn, entry_to_view,
-    session_open, tools,
+    ForwardingChildFactory, Ordering, Path, PathBuf, ProtocolError, SessionParams, SessionStore,
+    SessionSubagentBridge, SubagentBridge, Supervisor, SupervisorParams, TurnChildDriver,
+    TurnConfig, Value, ViewEntry, Workspace, context, derive_turn, entry_to_view, session_open,
+    tools,
 };
 use crate::agent::{OmRoute, StreamDelta};
 use crate::config::{ProviderRef, Route, ToolBatchPolicy};
@@ -512,21 +512,18 @@ pub(super) fn wire_events(
     // truth): the core's watcher-parsed state, re-injected at each
     // assembly. A `Weak` keeps the hook from pinning the core.
     wire_plan_hook(agent, Some(Arc::clone(core)), sid);
-    // The core's om_status hook
-    // shapes it into the protocol event on the shared channel.
+    // The core's om_status hook forwards the pass's activity kind into the
+    // protocol event on the shared channel. The kind is the protocol's own,
+    // so the hook is a pass-through (4B).
     {
         let tx = core.events_tx.clone();
         let ws = workspace_id.to_owned();
         let sid = sid.to_owned();
-        agent.set_om_status_hook(Some(Arc::new(move |kind: &str| {
+        agent.set_om_status_hook(Some(Arc::new(move |kind| {
             let _ = tx.try_send(Event::OmStatus {
                 workspace: ws.clone(),
                 session: sid.clone(),
-                kind: match kind {
-                    "observing" => OmStatusKind::Observing,
-                    "reflecting" => OmStatusKind::Reflecting,
-                    _ => OmStatusKind::Idle,
-                },
+                kind,
             });
         })));
     }
