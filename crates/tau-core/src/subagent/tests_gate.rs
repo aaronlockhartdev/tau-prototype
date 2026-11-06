@@ -60,6 +60,7 @@ fn harness_with_gate(
             supervisor: Arc::clone(&sup),
             provider: Arc::new(ScriptedProvider::new(vec![sse("", &[])])),
             system_prompt: None,
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .unwrap();

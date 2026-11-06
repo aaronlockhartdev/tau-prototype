@@ -363,15 +363,24 @@ fn launch_seam_session_is_freed_when_dropped() {
         core: None,
         parent_entries: None,
     });
+    let stop = Arc::new(AtomicBool::new(false));
     let agent = AgentSession::launch(
         store,
         SessionRole::Seam {
             supervisor: sup,
             provider: canned_provider(),
             system_prompt: None,
+            stop: stop.clone(),
         },
     )
     .unwrap();
+    // #2C, total: the caller's flag is the agent's flag, so `MessageStop`'s one
+    // write reaches both cut points. A role that mints its own leaves the queued
+    // items draining after a stop — the harness kit is a caller of this role.
+    assert!(
+        Arc::ptr_eq(&stop, &agent.stop_flag()),
+        "the caller's stop flag is not the agent's"
+    );
     assert!(
         Arc::try_unwrap(agent).is_ok(),
         "the session must be droppable"

@@ -61,6 +61,7 @@ fn sup_with_parent(
             supervisor: sup.clone(),
             provider: parent_provider,
             system_prompt: None,
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .unwrap();
