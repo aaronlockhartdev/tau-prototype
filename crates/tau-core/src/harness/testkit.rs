@@ -136,7 +136,6 @@ pub(crate) fn manual_session_om(
             archived: false,
         }),
         agent: agent.clone(),
-        stop,
         turn: AtomicBool::new(false),
         provider,
         cwd,

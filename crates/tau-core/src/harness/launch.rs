@@ -638,7 +638,7 @@ pub(super) fn wire_job_hook(
                 session: sid.clone(),
                 items: live.agent.queued_items(),
             });
-            live.stop.store(false, Ordering::SeqCst);
+            live.agent.stop_flag().store(false, Ordering::SeqCst);
             if live
                 .turn
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)

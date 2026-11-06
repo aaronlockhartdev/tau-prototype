@@ -18,8 +18,12 @@ impl Core {
                 lane,
             } => {
                 let live = self.live_unarchived(&session)?;
-                // A new send clears the stop flag: the previous turn is over.
-                live.stop.store(false, Ordering::SeqCst);
+                // One flag, minted where the provider is built and owned by the
+                // agent: this write both cuts the stream (the forwarding seam
+                // reads it) and marks the entry interrupted (`append_assistant`
+                // reads it). The pair this replaces is #2C's root half; the
+                // field it deletes is #6C — a mirror with no producer can drift.
+                live.agent.stop_flag().store(false, Ordering::SeqCst);
                 // A leading /skill: expands at this boundary, before the
                 // entry is recorded (ticket #28); a misspelled name
                 // rejects the send — nothing is recorded.
@@ -99,11 +103,12 @@ impl Core {
                         .map_err(|e| ProtocolError::Other { message: e })?;
                     return Ok(CommandOutput::None);
                 }
-                // One flag, minted where the provider is built: this write
-                // both cuts the stream (the forwarding seam reads it) and
-                // marks the entry interrupted (append_assistant reads it).
-                // The pair this replaces is #2C's root half.
-                live.stop.store(true, Ordering::SeqCst);
+                // One flag, minted where the provider is built and owned by the
+                // agent: this write both cuts the stream (the forwarding seam
+                // reads it) and marks the entry interrupted (`append_assistant`
+                // reads it). #2C's root half replaced the pair this writes; #6C
+                // deletes the `LiveSession` mirror it used to write.
+                live.agent.stop_flag().store(true, Ordering::SeqCst);
                 Ok(CommandOutput::None)
             }
             Command::QueueItemRemove { session, item } => {
