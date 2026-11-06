@@ -31,10 +31,6 @@ pub(crate) const CONNECT_TIMEOUT_SECS: u64 = 30;
 pub(crate) struct LiveSession {
     pub(crate) meta: Mutex<SessionMeta>,
     pub(crate) agent: Arc<AgentSession>,
-    /// User stop (spec §7): the forwarding sink returns false on it, which
-    /// cuts the in-flight stream the way a force does — a stop is a force
-    /// with no message.
-    pub(crate) stop: Arc<AtomicBool>,
     pub(crate) turn: AtomicBool,
     /// The provider the loop runs against, and the surface the post-turn
     /// reconciliation reads the turn's calls from (`TurnProvider::call_log`).

@@ -315,7 +315,6 @@ async fn a_live_om_run_emits_om_status_events() {
                 archived: false,
             }),
             agent,
-            stop: Arc::new(AtomicBool::new(false)),
             turn: AtomicBool::new(false),
             provider,
             cwd,

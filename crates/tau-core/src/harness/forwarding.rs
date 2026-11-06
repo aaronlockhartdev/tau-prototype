@@ -363,7 +363,6 @@ impl SubagentBridge for SessionSubagentBridge {
                 archived: false,
             }),
             agent: n.agent.clone(),
-            stop: n.agent.stop_flag(),
             turn: AtomicBool::new(false),
             provider: n.provider.clone(),
             cwd: n.cwd.clone(),
@@ -456,7 +455,7 @@ impl SubagentBridge for SessionSubagentBridge {
             session: n.parent.clone(),
             items: live.agent.queued_items(),
         });
-        live.stop.store(false, Ordering::SeqCst);
+        live.agent.stop_flag().store(false, Ordering::SeqCst);
         // The bridge owns the core (the `Arc` it was built with): a wake's
         // turn start is never skipped, so a parked parent is always woken.
         if live

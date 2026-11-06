@@ -283,7 +283,7 @@ impl Core {
                     {
                         let _ = sup.stop_handle(link.handle(), StoppedBy::User);
                     }
-                    live.stop.store(true, Ordering::SeqCst);
+                    live.agent.stop_flag().store(true, Ordering::SeqCst);
                     live.agent.mark_closed();
                     if let Some(sup) = live.agent.subagents() {
                         sup.stop_all(StoppedBy::User);
@@ -316,7 +316,7 @@ impl Core {
                     self.sessions.lock().insert(session.clone(), live.clone());
                     return Err(turn_started_refusal(&session, "deleting"));
                 }
-                live.stop.store(true, Ordering::SeqCst);
+                live.agent.stop_flag().store(true, Ordering::SeqCst);
                 if let Some(sup) = live.agent.subagents() {
                     sup.stop_all(StoppedBy::User);
                 }

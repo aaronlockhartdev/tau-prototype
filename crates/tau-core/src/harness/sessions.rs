@@ -295,7 +295,6 @@ impl Core {
         let live = Arc::new(LiveSession {
             meta: Mutex::new(meta.clone()),
             agent,
-            stop,
             turn: AtomicBool::new(false),
             provider,
             cwd: PathBuf::from(&workspace.cwd),
