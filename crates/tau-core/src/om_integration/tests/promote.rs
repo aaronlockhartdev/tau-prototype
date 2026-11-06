@@ -45,6 +45,43 @@ fn promote_leaves_chunks_buffered_at_or_below_the_floor() {
 }
 
 #[test]
+fn a_promote_leaves_the_field_the_gates_read() {
+    // The field names the raw window every activation gate reads; the promote
+    // was the one writer that did not compute it, leaving the kept chunk's
+    // compressed tokens where the drain gate expects raw volume (#392's
+    // quantity, at the reading #409 added).
+    let dir = tempfile::tempdir().unwrap();
+    // 4 entries of 10k chars = 2500 tokens each: 10k raw over the 6k floor,
+    // target 4k. The first chunk (5k of footprint, entries 1-2) crosses alone;
+    // the kept chunk covers entries 3-4 — 5k raw, 2k of its own tokens, so the
+    // two readings of the field part.
+    let mut store = store_with_text_entries(dir.path(), 4, 10_000);
+    let mut state = OmState::from_config(&crate::config::Om::default(), OmRecord::default());
+    state.record.buffered_chunks = vec![
+        BufferedChunk {
+            range: ("00000001".into(), "00000002".into()),
+            last_ts: 100,
+            text: "obs one".into(),
+            tokens: 5000,
+        },
+        BufferedChunk {
+            range: ("00000003".into(), "00000004".into()),
+            last_ts: 200,
+            text: "obs two".into(),
+            tokens: 2000,
+        },
+    ];
+    assert!(state.promote(&mut store).unwrap());
+    assert_eq!(state.buffered().len(), 1, "the second chunk stays buffered");
+    let raw = state.unobserved_tokens(&mut store).unwrap();
+    assert_eq!(raw, 5_000, "the window past the promoted cursor");
+    assert_eq!(
+        state.record.pending_tokens, raw,
+        "the field is the raw window the gates read, not the kept chunk's 2k tokens"
+    );
+}
+
+#[test]
 fn promote_moves_the_chunks_to_the_log_and_advances_the_cursor() {
     // 10k raw over the 6k floor: the target is 4k, both 3k chunks cross
     // it, so both are promoted and the cursor lands on the last one. The

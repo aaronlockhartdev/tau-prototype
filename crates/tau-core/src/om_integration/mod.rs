@@ -56,16 +56,13 @@ impl OmState {
         &self.record.buffered_chunks
     }
 }
+
+/// A config threshold as a u32: the config validates these fit a u32 at load,
 /// so a mismatch is a bug, not a recoverable error.
 fn threshold_u32(v: u64) -> u32 {
     u32::try_from(v).expect("om thresholds are validated to fit a u32 at config load")
 }
 
-/// The thresholds the passes run with, folded from the `[om]` section: the
-/// config states the buffer's fill step as absolute tokens and the module's
-/// `buffer_activation` is a ratio of the observe threshold
-/// (1 − increment/threshold; the two forms agree at the defaults: 6k over 30k =
-/// 0.8), and `observe_threshold.max(1)` keeps that ratio defined.
 /// Apply the resolved OM generation profile to a request (#407): the
 /// Observer and Reflector calls carry temperature, penalties, the output
 /// cap, the reasoning policy, and the `extra_body` passthrough.
