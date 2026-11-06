@@ -1,4 +1,4 @@
-use super::tests::{read, text};
+use super::tests::{DEFAULT_BUDGET, read, text};
 use super::*;
 use base64::Engine;
 
@@ -33,7 +33,7 @@ const WEBP_B64: &str = "UklGRiQAAABXRUJQVlA4TBcAAAAvP8APAAdQ5OIVqv8BICH8f69F9D/1
 /// media type, and base64 that decodes to a decodable JPEG of the source
 /// dimensions.
 fn assert_canonical_jpeg(dir: &std::path::Path, name: &str) {
-    let result = read(dir, &json!({"path": name}), None, None, None);
+    let result = read(dir, &json!({"path": name}), None, DEFAULT_BUDGET, None);
     let ToolOutput::Image(img) = result.output() else {
         panic!("expected an image block, got {result:?}");
     };
@@ -80,7 +80,7 @@ async fn read_returns_text_for_plain_utf8() {
         dir.path(),
         &json!({"path": "note.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         None,
     ));
     assert!(out.contains("hello"), "{out}");
@@ -95,7 +95,13 @@ async fn a_corrupt_image_is_refused_loudly() {
         b"\x89PNG\r\n\x1a\nnot-really",
     )
     .unwrap();
-    let result = read(dir.path(), &json!({"path": "broken.png"}), None, None, None);
+    let result = read(
+        dir.path(),
+        &json!({"path": "broken.png"}),
+        None,
+        DEFAULT_BUDGET,
+        None,
+    );
     assert_eq!(result.status(), ToolStatus::Error);
     let ToolOutput::Text(t) = result.output() else {
         panic!("expected a text refusal, got {result:?}");
@@ -113,7 +119,7 @@ async fn an_oversized_image_is_refused_loudly() {
         dir.path(),
         &json!({"path": "big.png"}),
         Some(100),
-        None,
+        DEFAULT_BUDGET,
         None,
     ));
     assert!(out.contains("over the 100-byte cap"), "{out}");
@@ -126,7 +132,13 @@ async fn an_over_budget_image_is_downscaled_to_the_pixel_budget() {
     let dir = tempfile::tempdir().unwrap();
     // 2048×2048 = 4,194,304 px, double the 2,097,152 default budget.
     write_test_image_of_size(dir.path(), "large.png", 2048, 2048);
-    let result = read(dir.path(), &json!({"path": "large.png"}), None, None, None);
+    let result = read(
+        dir.path(),
+        &json!({"path": "large.png"}),
+        None,
+        DEFAULT_BUDGET,
+        None,
+    );
     let ToolOutput::Image(img) = result.output() else {
         panic!("expected an image block, got {result:?}");
     };
@@ -150,13 +162,7 @@ async fn a_tight_pixel_budget_downscales_an_oversized_image() {
     let dir = tempfile::tempdir().unwrap();
     // 512×512 = 262,144 px; a quarter-area budget scales by ½ to 256×256.
     write_test_image_of_size(dir.path(), "mid.png", 512, 512);
-    let result = read(
-        dir.path(),
-        &json!({"path": "mid.png"}),
-        None,
-        Some(65_536),
-        None,
-    );
+    let result = read(dir.path(), &json!({"path": "mid.png"}), None, 65_536, None);
     let ToolOutput::Image(img) = result.output() else {
         panic!("expected an image block, got {result:?}");
     };

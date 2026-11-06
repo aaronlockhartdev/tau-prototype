@@ -38,8 +38,9 @@ fn text(out: ToolResult) -> String {
     }
 }
 
-/// A dispatch context for a test session: the image cap is `None`; the
-/// surface tests vary only session / supervisor / child.
+/// A dispatch context for a test session: the image cap is `None`, the pixel
+/// budget the config's own default (the budget is a required `u64`, audit
+/// Add6-T6); the surface tests vary only session / supervisor / child.
 fn ctx<'a>(
     session: &'a AgentSession,
     cwd: &'a std::path::Path,
@@ -50,7 +51,7 @@ fn ctx<'a>(
         session,
         cwd,
         image_max_bytes: None,
-        image_max_pixels: None,
+        image_max_pixels: crate::config::ImageLimits::default().max_pixels,
         progress: None,
         supervisor,
         child,

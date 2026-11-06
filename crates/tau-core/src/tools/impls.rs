@@ -27,7 +27,7 @@ pub(super) fn read(
     cwd: &Path,
     args: &ReadArgs,
     image_max_bytes: Option<u64>,
-    image_max_pixels: Option<u64>,
+    image_max_pixels: u64,
     registry: Option<&mut hashline::registry::Registry>,
 ) -> ToolResult {
     let path = resolve(cwd, &args.path);
@@ -234,14 +234,13 @@ fn looks_like_image(bytes: &[u8]) -> bool {
 )]
 fn downscale_to_budget(
     img: &image::DynamicImage,
-    max_pixels: Option<u64>,
+    max_pixels: u64,
 ) -> (image::DynamicImage, Option<String>) {
-    let budget = max_pixels.unwrap_or(crate::config::ImageLimits::default().max_pixels);
     let area = u64::from(img.width()) * u64::from(img.height());
-    if area <= budget {
+    if area <= max_pixels {
         return (img.clone(), None);
     }
-    let scale = (budget as f64 / area as f64).sqrt();
+    let scale = (max_pixels as f64 / area as f64).sqrt();
     let w = (f64::from(img.width()) * scale).floor().max(1.0) as u32;
     let h = (f64::from(img.height()) * scale).floor().max(1.0) as u32;
     let note = format!(

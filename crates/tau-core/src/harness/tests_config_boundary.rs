@@ -39,6 +39,19 @@ base_url = "http://127.0.0.1:2/v1"
 context_window = 32768
 max_tokens = 8192
 "#;
+
+/// #257 + Add6-T6: a decode-area budget a session's read has to honour, far
+/// from the default, so a re-derived turn carrying the default is visible.
+const PIXEL_BUDGET: &str = r#"
+[providers.dev]
+base_url = "http://127.0.0.1:9/v1"
+
+[providers.dev.models.model]
+context_window = 32768
+
+[limits.image]
+max_pixels = 65536
+"#;
 /// A layer's `config.toml`.
 fn config_path(layer: &Path) -> PathBuf {
     layer.join(crate::config::CONFIG_FILE)
@@ -435,5 +448,45 @@ async fn a_session_with_no_memory_re_reads_no_thresholds() {
     assert!(
         live.agent.om_state().is_none(),
         "a session launched with no OM gains one from a config edit"
+    );
+}
+
+/// Add6-T6, positively: the re-derived turn carries the configured decode-area
+/// budget whole. The budget is a `u64` end to end (the `Option` and the leaf's
+/// `unwrap_or(default)` are gone), so a turn that answers the config's number
+/// is the invariant — and the pre-edit turn answering the config's default is
+/// what makes the assertion a refusal of the old shape, not a tautology.
+#[tokio::test]
+async fn a_re_derived_turn_carries_the_configured_pixel_budget() {
+    // The file-layer path (the shape `an_observe_threshold_edit_runs_the_next_turn_s_pass`
+    // uses): the custom builder merges providers alone from a project layer,
+    // and `limits` is the section under test.
+    let system = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    write_config_fixture(&project.path().join(".tau"), PIXEL_BUDGET);
+    let core = CoreBuilder::default_system()
+        .unwrap()
+        .with_system_dir(system.path().to_path_buf())
+        .with_home(system.path().to_path_buf())
+        .build()
+        .unwrap();
+    let workspace = open_ws(&core, project.path()).await;
+    let live = manual_session(
+        &core,
+        &workspace,
+        provider::canned("data: [DONE]\n\n"),
+        TurnConfig::default(),
+    );
+    assert_eq!(
+        live.agent.current_turn().image_max_pixels,
+        crate::config::ImageLimits::default().max_pixels,
+        "a turn with no config behind it carries the config's own default"
+    );
+    carry_model(&live, "dev/model");
+    core.rederive_turn(&live);
+    assert_eq!(
+        live.agent.current_turn().image_max_pixels,
+        65_536,
+        "the budget the config declares reaches the turn, not the built-in default"
     );
 }

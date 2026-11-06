@@ -1,7 +1,7 @@
 //! The `edit` ack's line counts (#301): the ack states what the file did,
 //! counted with the tool's own line model on both sides of the subtraction.
 
-use super::tests::{edit, fresh_registry, read, text, write};
+use super::tests::{DEFAULT_BUDGET, edit, fresh_registry, read, text, write};
 use super::*;
 
 /// The anchors of a `read` page, in row order.
@@ -28,7 +28,7 @@ async fn a_content_preserving_replacement_reports_its_counts_and_leaves_the_byte
         dir.path(),
         &json!({"path": "blank.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let anchors = anchors_of(&page);
@@ -69,7 +69,7 @@ async fn a_deletion_from_a_file_ending_blank_reports_no_added_lines() {
         dir.path(),
         &json!({"path": "blank.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let anchors = anchors_of(&page);
@@ -107,7 +107,7 @@ async fn a_replacement_longer_than_its_span_counts_the_payload_lines() {
         dir.path(),
         &json!({"path": "grow.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let anchors = anchors_of(&page);
@@ -147,7 +147,7 @@ async fn an_edit_of_an_empty_file_counts_the_one_row_the_tool_showed() {
         dir.path(),
         &json!({"path": "empty.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let anchors = anchors_of(&page);
