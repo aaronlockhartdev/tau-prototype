@@ -204,23 +204,30 @@ impl ScenarioSet {
         }
         &self.fallback
     }
-    /// Append a request to the capture file named by `TAU_MOCK_CAPTURE` (the
-    /// `accept-sender-labels` suite reads it to assert the assembled child
-    /// context, ticket #188).
+    /// Append a request to the capture dir named by `TAU_MOCK_CAPTURE` (the
+    /// `accept-sender-labels` suite reads `requests.jsonl` there to assert the
+    /// assembled child context, ticket #188). A capture that cannot be written
+    /// is reported: the crate's job is to be a trustworthy witness, and a
+    /// silent miss surfaces as a missing file in a suite far from the cause.
     pub fn capture_request(&self, req: &WireRequest) {
-        if let Some(dir) = &self.capture_dir {
-            let _ = std::fs::create_dir_all(dir);
-            let line = serde_json::to_string(req).unwrap_or_default();
-            let path = dir.join("requests.jsonl");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                let _ = writeln!(f, "{line}");
-            }
+        let Some(dir) = &self.capture_dir else { return };
+        if let Err(e) = write_captured(dir, req) {
+            tracing::warn!("mock capture of one request failed (dir {dir:?}): {e}");
         }
     }
+}
+
+/// The capture's one failure path: the dir, the line, the append. The errors
+/// name the dir, since a relative `TAU_MOCK_CAPTURE` resolves against the
+/// mock's cwd, not the suite's.
+fn write_captured(dir: &Path, req: &WireRequest) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let line = serde_json::to_string(req).map_err(std::io::Error::other)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("requests.jsonl"))?;
+    writeln!(f, "{line}")
 }
 
 /// The `data:` payloads of one turn, in wire order: `response.created`,
@@ -321,6 +328,55 @@ fn chunk_text(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capture_appends_one_line_per_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let set = ScenarioSet {
+            scenarios: Vec::new(),
+            fallback: fallback(),
+            capture_dir: Some(dir.path().to_path_buf()),
+        };
+        set.capture_request(&WireRequest {
+            instructions: Some("first".into()),
+            input: vec![],
+        });
+        set.capture_request(&WireRequest {
+            instructions: None,
+            input: vec![json!({"role": "user", "content": "second"})],
+        });
+        let raw = std::fs::read_to_string(dir.path().join("requests.jsonl")).unwrap();
+        let lines: Vec<Value> = raw
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("a captured line is JSON"))
+            .collect();
+        assert_eq!(lines.len(), 2, "one line per request, appended");
+        assert_eq!(lines[0]["instructions"], json!("first"));
+        // `instructions` has no skip_serializing_if, so the absent case rides
+        // the capture as null — the witness file's shape, asserted as written.
+        assert_eq!(lines[1]["instructions"], Value::Null);
+        assert_eq!(lines[1]["input"][0]["content"], json!("second"));
+    }
+
+    #[test]
+    fn an_uncapturable_dir_is_no_failure_for_the_served_turn() {
+        // The negative: a capture that cannot be written (the dir path is a
+        // file) must not break the request path — the suite's witness is
+        // missing, and the warn is what names that cause.
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("taken");
+        std::fs::write(&taken, b"not a dir").unwrap();
+        let set = ScenarioSet {
+            scenarios: Vec::new(),
+            fallback: fallback(),
+            capture_dir: Some(taken),
+        };
+        set.capture_request(&WireRequest {
+            instructions: None,
+            input: vec![],
+        });
+        assert_eq!(set.select(&WireRequest::default()).turns.len(), 1);
+    }
 
     #[test]
     fn chunk_text_round_trips() {

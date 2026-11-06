@@ -32,3 +32,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 [dev-dependencies]
 reqwest = { workspace = true }
 tau-core = { path = "../tau-core" }
+tempfile = { workspace = true }
