@@ -1,4 +1,4 @@
-use crate::agent::{AgentError, AgentSession, Inner, OmRoute, SessionStore, TurnProviderRef};
+use crate::agent::{AgentSession, Inner, OmRoute, SessionStore, TurnProviderRef};
 use crate::om_integration::{OmError, OmStage};
 use tau_protocol::{Diagnostic, OmStatusKind};
 
@@ -133,8 +133,9 @@ impl AgentSession {
     /// clone and is written back at the end; the store is handed to it
     /// phase by phase through the re-lock, so the session lock is never
     /// held across a provider call (a std guard cannot cross an await in a
-    /// spawned future).
-    pub(super) async fn om_turn_end(&self) -> Result<(), AgentError> {
+    /// spawned future). A failed pass never kills the turn (#86): its whole
+    /// surface is the `om_failed` record, so the signature carries no error.
+    pub(super) async fn om_turn_end(&self) {
         // The state clone comes first: a session with OM disabled runs no pass,
         // so it records nothing about the route (#348).
         let (state, hook) = {
@@ -142,10 +143,10 @@ impl AgentSession {
             (inner.om.clone(), inner.om_status_hook.clone())
         };
         let Some(mut state) = state else {
-            return Ok(());
+            return;
         };
         let Some((om_provider, model)) = self.om_address() else {
-            return Ok(());
+            return;
         };
         Self::stamp_om_model(&model, &mut state.record);
         // D13.1: join the in-flight buffer cycle BEFORE the pass — the
@@ -234,7 +235,6 @@ impl AgentSession {
         // mid-loop trigger's own rules, and the next settle's D13.1 join
         // bounds the cycle.
         self.om_mid_loop();
-        Ok(())
     }
 
     /// D13.2: write a pass's state back — a field-split merge over the file's

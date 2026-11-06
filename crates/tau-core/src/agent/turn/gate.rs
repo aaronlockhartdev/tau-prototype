@@ -118,7 +118,7 @@ impl AgentSession {
         // passes, and a pass that compacts nothing ends the rung — the rungs
         // below are the only compaction left.
         for _ in 0..self.unobserved_entries().max(1) {
-            self.om_turn_end().await?;
+            self.om_turn_end().await;
             if !self.rung_moves(&mut compacted) {
                 break;
             }

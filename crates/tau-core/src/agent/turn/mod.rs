@@ -229,7 +229,7 @@ impl AgentSession {
             if result.calls.is_empty() {
                 // The model ended the turn: the synchronous OM pass runs
                 // before any follow-up starts the next one (spec §4).
-                self.om_turn_end().await?;
+                self.om_turn_end().await;
                 // The completion gate (spec §5.3): a qualifying turn-end
                 // (≥1 tool call, no QUESTION: marker) runs the check. A
                 // pass stands the turn; a fail records a gate_attempt,

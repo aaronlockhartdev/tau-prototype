@@ -56,7 +56,6 @@ pub(crate) type StreamDeltaHook = Arc<dyn Fn(&StreamDelta) + Send + Sync>;
 pub enum AgentError {
     Session(crate::session::Error),
     Provider(crate::provider::ProviderError),
-    Om(crate::om_integration::OmError),
     /// The assembled prompt exceeds the context gate's safe budget with no
     /// unobserved material left to compact (tickets #255/#256).
     ContextOverflow {
@@ -83,7 +82,6 @@ impl fmt::Display for AgentError {
         match self {
             Self::Session(e) => write!(f, "session: {e}"),
             Self::Provider(e) => write!(f, "provider: {e}"),
-            Self::Om(e) => write!(f, "om: {e}"),
             Self::ContextOverflow { prompt, budget } => write!(
                 f,
                 "context overflow: prompt ~{prompt} tokens exceeds the safe budget of {budget}; nothing left to compact"
