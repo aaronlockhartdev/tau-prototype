@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -22,7 +23,12 @@ struct CannedChild {
 }
 
 impl ChildProviderFactory for CannedChild {
-    fn create(&self, _child_session_id: &str, _model: &str) -> provider::TurnProviderRef {
+    fn create(
+        &self,
+        _child_session_id: &str,
+        _model: &str,
+        _stop: &Arc<AtomicBool>,
+    ) -> provider::TurnProviderRef {
         if self.slow_ms > 0 {
             provider::canned_slow(&self.body, self.slow_ms)
         } else {

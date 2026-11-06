@@ -272,7 +272,7 @@ pub(crate) struct ForwardingChildFactory {
     pub(crate) providers: Mutex<HashMap<String, Arc<ForwardingProvider>>>,
 }
 impl ChildProviderFactory for ForwardingChildFactory {
-    fn create(&self, child: &str, model: &str) -> TurnProviderRef {
+    fn create(&self, child: &str, model: &str, stop: &Arc<AtomicBool>) -> TurnProviderRef {
         // #336: a child is addressed at the provider its model's id names (a
         // `.md` agent type's model, or the parent's), not at the provider the
         // parent happened to open on. A prefix naming no provider is no route
@@ -291,7 +291,7 @@ impl ChildProviderFactory for ForwardingChildFactory {
             self.pipe.clone(),
             self.workspace.clone(),
             child.to_owned(),
-            Arc::new(AtomicBool::new(false)),
+            stop.clone(),
         ));
         // Stash it so the bridge's spawned reuses this exact provider for the
         // child's LiveSession (one per child, as the root has).
@@ -510,13 +510,14 @@ impl SubagentBridge for SessionSubagentBridge {
             items: live.agent.queued_items(),
         });
         live.stop.store(false, Ordering::SeqCst);
+        // The bridge owns the core (the `Arc` it was built with): a wake's
+        // turn start is never skipped, so a parked parent is always woken.
         if live
             .turn
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
-            && let Some(core) = self.core.self_arc()
         {
-            tokio::spawn(run_turn(core, live));
+            tokio::spawn(run_turn(Arc::clone(&self.core), live));
         }
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::AtomicBool;
 
 use crate::agent::testkit::*;
 
@@ -112,6 +113,7 @@ fn omless_agent(
 ) -> AgentSession {
     AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::surface::bare_specs(),
@@ -184,6 +186,7 @@ async fn under_budget_is_not_refused() {
     let provider = std::sync::Arc::new(ScriptedProvider::new(vec![sse("ok", &[])]));
     let agent = AgentSession::new(SessionParams {
         store: session_in(dir.path()),
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::surface::bare_specs(),

@@ -93,6 +93,7 @@ async fn a_cycle_committing_during_the_join_moves_the_settles_plan() {
     let provider = Arc::new(ScriptedProvider::new(vec![sse("a1", &[])]));
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -191,6 +192,7 @@ fn overlap_fixture(dir: &tempfile::TempDir) -> AgentSession {
         .unwrap();
     AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -277,6 +279,7 @@ async fn the_cycle_skips_raw_the_observation_cursor_has_covered() {
     om_state.save(&mut store).unwrap();
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),

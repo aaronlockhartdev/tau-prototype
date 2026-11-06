@@ -75,13 +75,12 @@ pub struct Supervisor {
     bridge: Arc<dyn SubagentBridge>,
     driver: Arc<dyn ChildDriver>,
     core: Option<Weak<crate::harness::Core>>,
-    /// Self-reference for the re-adopt: it builds a child's `AgentSession`
-    /// with the child link, which needs an `Arc<Supervisor>`. `Weak` (the
-    /// supervisor is owned by the parent session; a strong self would be a
-    /// cycle, ticket #43). `Arc::new_cyclic` fills it as the `Arc` is made, so
-    /// it is live for as long as `&self` is borrowable — no `Option`, and no
-    /// lock to read it out of.
-    self_weak: Weak<Self>,
+    /// The children this session owns, keyed by handle. The one operation
+    /// that needs an `Arc<Supervisor>` — re-adopt, which builds a child's
+    /// `ChildLink` — takes it from the `Arc` the caller holds
+    /// (`self: &Arc<Self>`), so there is no self-reference to store: a stored
+    /// `Weak` is never unresolvable while `&self` lives, and methods that
+    /// cannot upgrade it can never run.
     /// The parent's in-memory entries (issue #280): lets the fleet view and
     /// the handle-count seed avoid re-reading the parent's file from disk.
     parent_entries: Option<Vec<crate::session::Entry>>,
@@ -168,7 +167,7 @@ pub struct Spawned {
 impl Supervisor {
     #[must_use]
     pub fn new(p: SupervisorParams) -> Arc<Self> {
-        Arc::new_cyclic(|sup| Self {
+        Arc::new(Self {
             parent_session: p.parent_session.clone(),
             parent: Mutex::new(None),
             children: Mutex::new(HashMap::new()),
@@ -199,7 +198,6 @@ impl Supervisor {
             driver: p.driver,
             core: p.core,
             parent_entries: p.parent_entries,
-            self_weak: sup.clone(),
         })
     }
 
@@ -332,8 +330,10 @@ impl Supervisor {
     /// Addressing (name-based, the session id stays the machine key):
     /// the child's name (its displayed title, exact match) first, then
     /// the session id, then the internal handle (the GUI's protocol
-    /// commands pass it).
-    fn resolve(&self, name_or_id: &str) -> Option<Arc<Child>> {
+    /// commands pass it). The `Arc` receiver is what re-adopt needs: it
+    /// builds the cold child's link around this supervisor, so the `Arc`
+    /// the caller holds is the self-reference — no stored `Weak`.
+    fn resolve(self: &Arc<Self>, name_or_id: &str) -> Option<Arc<Child>> {
         let children = self.children.lock();
         let found = children
             .values()
@@ -349,7 +349,6 @@ impl Supervisor {
         // unknown, not a zombie.
         found.or_else(|| self.re_adopt_from_disk(name_or_id))
     }
-
     /// The child's live agent (the dispatch registers it as an ordinary
     /// live session — a child is a session, ADR-0006).
     pub fn child_agent(&self, handle: &str) -> Option<Arc<AgentSession>> {
@@ -419,6 +418,8 @@ mod tests_notify;
 mod tests_reclaim;
 #[cfg(test)]
 mod tests_spawn_handles;
+#[cfg(test)]
+mod tests_stop_flag;
 #[cfg(test)]
 mod tests_stop_resume;
 #[cfg(test)]

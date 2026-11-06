@@ -56,6 +56,7 @@ async fn om_crosses_observe_and_reflect_and_every_request_carries_a_user_query()
     ]));
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -175,6 +176,7 @@ async fn om_runs_notify_the_status_hook_in_order() {
     ]));
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -257,6 +259,7 @@ async fn a_compacted_seed_keeps_the_frozen_prefix_byte_identical_across_reflect(
     ]));
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -346,6 +349,7 @@ async fn a_turn_end_spawns_the_buffer_cycle_on_a_crossed_interval() {
     ]));
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),

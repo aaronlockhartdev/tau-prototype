@@ -62,7 +62,12 @@ struct AcceptanceFactory {
 }
 
 impl ChildProviderFactory for AcceptanceFactory {
-    fn create(&self, _child: &str, _model: &str) -> tau_core::provider::TurnProviderRef {
+    fn create(
+        &self,
+        _child: &str,
+        _model: &str,
+        _stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> tau_core::provider::TurnProviderRef {
         provider::production(&self.client, &self.provider, &self.requests)
     }
 }

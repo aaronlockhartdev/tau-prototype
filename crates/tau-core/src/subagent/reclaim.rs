@@ -96,7 +96,7 @@ impl Supervisor {
     /// partially-reclaimed fleet makes the early children disappear from the
     /// snapshot until a restart.
     #[must_use]
-    pub fn fleet_view(&self) -> Vec<tau_protocol::SubagentInfo> {
+    pub fn fleet_view(self: &Arc<Self>) -> Vec<tau_protocol::SubagentInfo> {
         let live = self
             .handles()
             .iter()
@@ -128,13 +128,14 @@ impl Supervisor {
     /// cold child. A missing or unreadable file, an unparseable record, a
     /// non-terminal (parked) child, and a hard-cap overflow all return
     /// `None` — re-adopt never fabricates a child.
-    pub(super) fn re_adopt_from_disk(&self, name_or_id: &str) -> Option<Arc<Child>> {
+    pub(super) fn re_adopt_from_disk(self: &Arc<Self>, name_or_id: &str) -> Option<Arc<Child>> {
         // A re-adopt adds one handle: the hard cap bounds it (the soft
         // bound is not a hard limit, so it does not gate re-adopt).
         self.check_fleet_cap().ok()?;
-        // The child's link needs an `Arc<Supervisor>`: the self weak is
-        // filled as the `Arc` is made, so it upgrades while `&self` lives.
-        let sup = self.self_weak.upgrade()?;
+        // The child's link needs an `Arc<Supervisor>`: the `Arc` this method
+        // was called through is that handle — a supervisor is only ever
+        // owned by one, so there is no weak to resolve.
+        let sup = Arc::clone(self);
         let disk = restore::disk_children(&self.cwd, &self.parent_session, None);
         let d: &DiskChild = disk
             .iter()
@@ -144,19 +145,23 @@ impl Supervisor {
         store.open().ok()?;
         let record = OmState::load_record(&mut store).unwrap_or_default();
         let inherited = self.inherited();
+        // The cold child gets its own flag, shared with its provider
+        // exactly as a spawn's is.
+        let stop = Arc::new(AtomicBool::new(false));
         let agent = AgentSession::launch(
             store,
             SessionRole::Child {
                 supervisor: sup,
                 // The re-adopted child is addressed at the provider its model
                 // id names, the same route a spawn takes (#336).
-                provider: self.provider.create(&d.child, &inherited.model),
+                provider: self.provider.create(&d.child, &inherited.model, &stop),
                 system_prompt: self.system_prompt.clone(),
                 model: inherited.model.clone(),
                 tools: tools::surface::child_specs(None),
                 record,
                 handle: d.handle.clone(),
                 turn: inherited.turn,
+                stop,
             },
         )
         .ok()?;

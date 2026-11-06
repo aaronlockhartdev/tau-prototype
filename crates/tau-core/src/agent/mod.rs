@@ -424,6 +424,11 @@ pub(crate) struct Inner {
 /// stays a single parameter as the ticket series grows the loop (spec §5).
 pub(crate) struct SessionParams {
     pub store: SessionStore,
+    /// The session's one persistent stop flag, minted by the site that
+    /// creates the session. A child's is the same `Arc` its forwarding
+    /// provider holds, so the seam that cuts the stream and the loop that
+    /// records the interrupted entry read one flag (#2B/#2C).
+    pub stop: Arc<AtomicBool>,
     /// The fully assembled system prompt: the caller builds it (agent-type
     /// prompt + context files via `context::assemble`) — the loop takes the
     /// result and performs no discovery of its own.
@@ -551,7 +556,7 @@ impl AgentSession {
             })),
             provider: p.provider,
             kill: Arc::new(AtomicBool::new(false)),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: p.stop,
             closed: Arc::new(AtomicBool::new(false)),
         }
     }

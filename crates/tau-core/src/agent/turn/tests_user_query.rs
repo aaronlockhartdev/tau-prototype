@@ -9,6 +9,7 @@ use crate::agent::testkit::{ScriptedProvider, session_in, sse};
 use crate::session::SessionStore;
 use serde_json::json;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 fn append(store: &mut SessionStore, kind: EntryKind, payload: serde_json::Value) -> String {
     let parent = store.leaf().unwrap().map(|e| e.id);
@@ -63,6 +64,7 @@ fn agent_with(
 ) -> Arc<AgentSession> {
     Arc::new(AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: crate::tools::tool_specs(),

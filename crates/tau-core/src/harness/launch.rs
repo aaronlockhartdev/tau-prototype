@@ -5,11 +5,11 @@
 //! (kind-string → event shaping) all live here, not at the call sites.
 
 use super::{
-    AgentSession, Arc, ChildProviderFactory, Config, Core, Event, ForwardingChildFactory, HashMap,
-    Mutex, OmStatusKind, Ordering, Path, PathBuf, ProtocolError, SessionParams, SessionStore,
-    SessionSubagentBridge, SubagentBridge, Supervisor, SupervisorParams, TurnChildDriver,
-    TurnConfig, Value, ViewEntry, Workspace, context, derive_turn, entry_to_view, session_open,
-    tools,
+    AgentSession, Arc, AtomicBool, ChildProviderFactory, Config, Core, Event,
+    ForwardingChildFactory, HashMap, Mutex, OmStatusKind, Ordering, Path, PathBuf, ProtocolError,
+    SessionParams, SessionStore, SessionSubagentBridge, SubagentBridge, Supervisor,
+    SupervisorParams, TurnChildDriver, TurnConfig, Value, ViewEntry, Workspace, context,
+    derive_turn, entry_to_view, session_open, tools,
 };
 use crate::agent::{OmRoute, StreamDelta};
 use crate::config::{ProviderRef, Route, ToolBatchPolicy};
@@ -69,6 +69,10 @@ pub enum SessionRole {
         /// them (#336). A type naming its own model gates with these until its
         /// first turn boundary re-derives them from its own model — S18.
         turn: TurnConfig,
+        /// The child's one stop flag, minted by the spawn and shared with the
+        /// provider it created: one flag is the truth at both cut points
+        /// (#2B/#2C).
+        stop: Arc<AtomicBool>,
     },
     /// A bare session (the test kits): a canned provider; no supervisor,
     /// no child link, no events.
@@ -122,6 +126,7 @@ impl AgentSession {
                 crate::gate::with_section(&mut system_prompt, &gates);
                 Ok(Arc::new(Self::new(SessionParams {
                     store,
+                    stop: Arc::new(AtomicBool::new(false)),
                     system_prompt,
                     model,
                     tools,
@@ -149,6 +154,7 @@ impl AgentSession {
                 record,
                 handle,
                 turn,
+                stop,
             } => {
                 let Inherited {
                     cwd,
@@ -193,6 +199,7 @@ impl AgentSession {
                     hashline,
                     subagents: None,
                     child: Some(Arc::new(crate::subagent::ChildLink { supervisor, handle })),
+                    stop,
                 });
                 // The plan-state re-injection (design: turn boundaries and
                 // post-compaction): the core's watcher-parsed state.
@@ -238,6 +245,7 @@ impl AgentSession {
                 };
                 let agent = Arc::new(Self::new(SessionParams {
                     store,
+                    stop: Arc::new(AtomicBool::new(false)),
                     system_prompt,
                     model: d.model,
                     tools: tools::surface::root_specs(),
@@ -459,6 +467,7 @@ fn root_session(
     let sid = store.id().to_owned();
     let agent = Arc::new(AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt,
         model: model.to_owned(),
         tools: tools::surface::root_specs(),

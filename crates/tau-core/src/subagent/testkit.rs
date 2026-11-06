@@ -5,6 +5,7 @@ use crate::harness::SessionRole;
 use crate::provider::{self, ResponseRequest, StreamOutcome, TurnSink};
 use crate::session::SessionStore;
 use serde_json::json;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -59,7 +60,7 @@ pub(crate) struct CannedFactory {
 }
 
 impl ChildProviderFactory for CannedFactory {
-    fn create(&self, _id: &str, model: &str) -> TurnProviderRef {
+    fn create(&self, _id: &str, model: &str, _stop: &Arc<AtomicBool>) -> TurnProviderRef {
         self.routed.lock().push(model.to_string());
         let slot = self.created.fetch_add(1, Ordering::SeqCst);
         let scripts = self
@@ -336,7 +337,7 @@ pub(crate) fn wait_for(cond: impl Fn() -> bool) {
 
 /// Waits until the child is observed `done` and returns its state info
 /// (the observed output for assertions).
-pub(crate) fn wait_for_done(sup: &Supervisor, handle: &str) -> SubagentInfo {
+pub(crate) fn wait_for_done(sup: &Arc<Supervisor>, handle: &str) -> SubagentInfo {
     wait_for(|| {
         matches!(
             sup.state_info(handle).unwrap().state,

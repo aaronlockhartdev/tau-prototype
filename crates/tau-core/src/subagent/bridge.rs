@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tau_protocol::payload::ResumeContract;
 
 /// The provider a child's loop runs against, created per child session id
@@ -12,8 +13,18 @@ use tau_protocol::payload::ResumeContract;
 /// stream-forwarding seam; tests return canned providers). `model` is the
 /// child's model id, so the factory can route the child to the provider that
 /// id names (#336) instead of the one its parent happens to address.
+///
+/// `stop` is the child's one stop flag: the spawn mints it and hands it to
+/// this provider and to the child's agent, so the seam's stream cut, its
+/// prefill `stop_signal`, and the loop's interrupted entry all read one flag
+/// (#2B/#2C).
 pub trait ChildProviderFactory: Send + Sync {
-    fn create(&self, child_session_id: &str, model: &str) -> TurnProviderRef;
+    fn create(
+        &self,
+        child_session_id: &str,
+        model: &str,
+        stop: &Arc<AtomicBool>,
+    ) -> TurnProviderRef;
 }
 
 /// The parent-side notice for a child state transition: the GUI badge and

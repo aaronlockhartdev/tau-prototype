@@ -50,6 +50,7 @@ async fn context_gate_fires_when_over_budget() {
     };
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -156,6 +157,7 @@ async fn context_gate_noop_when_under_budget() {
     };
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -229,6 +231,7 @@ async fn context_gate_refuses_when_the_ladder_cannot_fit() {
     };
     let agent = AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
