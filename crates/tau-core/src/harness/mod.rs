@@ -130,6 +130,8 @@ mod tests_turn_guards;
 #[cfg(test)]
 mod tests_turns;
 #[cfg(test)]
+mod tests_turns_delta;
+#[cfg(test)]
 mod tests_turns_status;
 #[cfg(test)]
 mod tests_turns_stream;
