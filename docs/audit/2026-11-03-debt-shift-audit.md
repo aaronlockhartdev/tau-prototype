@@ -2151,3 +2151,41 @@ The fix makes flag identity **total** (`fa9c86b`, +9): every `SessionRole` carri
 `stop`, the harness kit passes the flag its forwarding provider got, and `tests_launch` asserts
 `Arc::ptr_eq` across the seam role so no role can mint its own again. 10/10 green on the fix, 6/6 on
 merged main, full workspace gate **1201/1201, 0 fails** (acp legs included, machine quiet).
+
+# Wave 4 Measured Results (2026-11-06) — lanes N/O/P + merger items, merged
+
+Merge base `ff68cde` → main. Measured with `.tau/scripts/tree_loc.py` (whole-tree production,
+inline `#[cfg(test)]` excluded).
+
+| Merge | Item | prod net | Defect shape deleted | Live defect? |
+|---|---|---|---|---|
+| `1b1c4f9` | lane P · #326 store bag one source | **−24** | six hand-copied field lists | **yes** — 14 fields leaked between tests, verdict depended on file order |
+| `70f1e08` | lane N · 3F the lane parameter | **−1** | `if steering` branch with no producer | no (coordination) |
+| `9f5fc7e` | merger · FE9 card expansion | 0 | local clone + `$effect` + latch + dual-write | no (rule violation) |
+| `bbd0550` | lane O · 5A/5B + 6D | **−16** | f64 round trip, dead `>= 1000.0` branch, two false `expect`s | **yes (6D)** — a promote left compressed tokens in the raw-window field the drain gate reads; a window that warranted a drain skipped it |
+
+Wave-4 total: **−41 production**. Campaign through wave 4: 49,185 → **50,032** (+847).
+
+## Refutations this wave (the report's own claims, killed by verification)
+
+- **FE9's fix is impossible as written.** "Make `entryOpen` a reactive `$state(new Map())`" — Svelte
+  5.57.2 does not deep-proxy a Map inside `$state`; a `.set` fires no reader. Pinned by
+  `app/svelte/lib/store/state-proxy.test.ts` + `BagShapes.svelte`: a record key-add IS proxied, a Map
+  `.set` is NOT. The store's "Maps are not reactive" comment block was accurate and stays. The fix
+  changes the representation to the one the runtime tracks (a keyed record), not the Map.
+- **3F's deletion variant is false.** The audit measured "forcing `entry_id: None` keeps all 406 green";
+  it goes red at `harness::tests_stream` `a_notified_steer_lands_in_id_order…` (tests_stream.rs:457).
+- **6E is not a mirror.** Two thresholds, not one: `buffered` is a hysteresis latch. Mutating it in
+  place loses a frame — pinned by a new red-capable test (+7, refused as a deletion).
+- **FE9e already dead** (the `openedObj` mirror went in `9ac7c08`); **FE9c refused a third time**
+  (net +5 measured, needs a 16-file test migration; the prototype was reverted).
+
+## Two process failures worth keeping
+
+- **Lane reports naming commits that do not exist.** Two lanes reported shas absent from the repo
+  (`3067452`, `80337a2`) with their work sitting uncommitted. On this box /tmp is wiped mid-flight —
+  uncommitted work is lost work. Every lane brief now says: commit early, and `git cat-file -t <sha>`
+  before reporting a sha.
+- **File-tool anchors are content-hashed and shared across files.** An anchor taken from a grep of file
+  X can be claimed by file Y and silently edit Y. Lane P lost 42 lines in `Transcript.svelte`; I lost a
+  line in `tests_turns.rs`. Both recovered by `git diff` + `git checkout --`.
