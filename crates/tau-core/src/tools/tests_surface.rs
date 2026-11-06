@@ -2,8 +2,11 @@
 //! agent-type filter, and the refusal rules — each a direct unit test of
 //! the module, previously only reachable by running a whole turn.
 
+use super::args::{
+    BASH_REQUIRED, EDIT_MEMBER_REQUIRED, EDIT_REQUIRED, READ_REQUIRED, WRITE_REQUIRED,
+};
 use super::surface;
-use super::{ToolCall, ToolOutput, ToolResult};
+use super::{ToolCall, ToolOutput, ToolResult, ToolStatus};
 use crate::agent::{AgentSession, TurnConfig};
 use crate::agent_type::builtin_general;
 use crate::config::{Om, SubAgents, ToolBatchPolicy};
@@ -29,7 +32,7 @@ fn fresh_store(cwd: &std::path::Path, id: &str) -> SessionStore {
 
 /// The tool output's text: an image block on these paths is a bug.
 fn text(out: ToolResult) -> String {
-    match out.output {
+    match out.into_parts().0 {
         ToolOutput::Text(t) => t,
         ToolOutput::Image { .. } => panic!("expected text, got an image block"),
     }
@@ -337,7 +340,11 @@ async fn a_refused_write_leaves_the_served_baseline_live() {
         args: serde_json::json!({"path": "k.txt"}),
     };
     let out = surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &bad).await;
-    assert!(!out.ok, "a write without content is refused");
+    assert_eq!(
+        out.status(),
+        ToolStatus::Error,
+        "a write without content is refused"
+    );
 
     assert!(
         child.anchors().lock().served_map(&key).is_some(),
@@ -361,7 +368,11 @@ async fn a_background_bash_without_a_command_is_refused() {
         args: serde_json::json!({ "background": true }),
     };
     let out = surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &call).await;
-    assert!(!out.ok, "no command: refused, not an empty job");
+    assert_eq!(
+        out.status(),
+        ToolStatus::Error,
+        "no command: refused, not an empty job"
+    );
     assert_eq!(text(out), "bash: missing \"command\"");
     assert!(!child.background_jobs().has_live(), "nothing was spawned");
 }
@@ -379,5 +390,86 @@ async fn a_background_bash_with_a_command_spawns() {
         args: serde_json::json!({ "background": true, "command": "true" }),
     };
     let out = surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &call).await;
-    assert!(out.ok, "{}", text(out));
+    assert_eq!(out.status(), ToolStatus::Ok, "{}", text(out));
+}
+
+// T1's no-drift pair. The spec's declared `required` array is built from the
+// parser's own key list (`mod.rs` uses `args::*_REQUIRED`), so the contract
+// shipped to the model is the contract a call is checked against. The positive
+// pins that identity for every core tool; the negative shows a call that
+// violates it refused at `dispatch` — the enforcement runs, not just the text.
+#[test]
+fn the_core_specs_declare_the_parsers_required_set() {
+    let declared: Vec<(String, Vec<String>)> = super::tool_specs()
+        .into_iter()
+        .filter(|s| matches!(s.name.as_str(), "read" | "write" | "edit" | "bash"))
+        .map(|s| {
+            let required = s.parameters["required"]
+                .as_array()
+                .expect("a core spec declares its required set")
+                .iter()
+                .map(|v| v.as_str().expect("a required entry is a string").to_owned())
+                .collect();
+            (s.name, required)
+        })
+        .collect();
+    let expected: Vec<(String, Vec<String>)> = [
+        ("read", READ_REQUIRED.as_slice()),
+        ("write", WRITE_REQUIRED.as_slice()),
+        ("edit", EDIT_REQUIRED.as_slice()),
+        ("bash", BASH_REQUIRED.as_slice()),
+    ]
+    .into_iter()
+    .map(|(name, keys)| {
+        (
+            name.to_owned(),
+            keys.iter().map(|k| (*k).to_owned()).collect(),
+        )
+    })
+    .collect();
+    assert_eq!(declared, expected);
+    // The nested set: an `edits` member's required keys are the parser's too.
+    let edit = super::tool_specs()
+        .into_iter()
+        .find(|s| s.name == "edit")
+        .expect("edit is a core tool");
+    assert_eq!(
+        edit.parameters["properties"]["edits"]["items"]["required"]
+            .as_array()
+            .expect("an edits item declares its required set")
+            .iter()
+            .map(|v| v.as_str().expect("a required entry is a string"))
+            .collect::<Vec<_>>(),
+        EDIT_MEMBER_REQUIRED.to_vec()
+    );
+}
+
+#[tokio::test]
+async fn the_declared_required_set_is_enforced_at_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_parent, _sup, child) = parent_child(dir.path());
+    let cwd = dir.path().to_path_buf();
+    // Each core tool, with one of its declared required keys absent: refused at
+    // the one seam, naming the key the schema says is required.
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        ("read", serde_json::json!({}), "path"),
+        ("write", serde_json::json!({ "path": "x.txt" }), "content"),
+        ("edit", serde_json::json!({ "edits": [] }), "path"),
+        ("bash", serde_json::json!({ "background": true }), "command"),
+    ];
+    for (name, args, key) in cases {
+        let call = ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            args,
+        };
+        let out =
+            surface::dispatch(ctx(child.as_ref(), &cwd, None, child.child_link()), &call).await;
+        assert_eq!(
+            out.status(),
+            ToolStatus::Error,
+            "{name}: a dropped required key is refused"
+        );
+        assert_eq!(text(out), format!("{name}: missing {key:?}"));
+    }
 }

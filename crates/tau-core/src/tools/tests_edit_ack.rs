@@ -1,8 +1,7 @@
 //! The `edit` ack's line counts (#301): the ack states what the file did,
 //! counted with the tool's own line model on both sides of the subtraction.
 
-use super::impls::{edit, read, write};
-use super::tests::{fresh_registry, text};
+use super::tests::{edit, fresh_registry, read, text, write};
 use super::*;
 
 /// The anchors of a `read` page, in row order.

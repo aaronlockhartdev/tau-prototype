@@ -27,24 +27,27 @@ pub use tau_protocol::payload::ToolOutput;
 /// the verdict and the entry.
 pub use tau_protocol::payload::ToolStatus;
 
-/// A tool's result: the model-facing output plus an explicit ok/error verdict
-/// set by the tool itself (which knows whether it succeeded) — the source of
-/// truth for the GUI status indicator. A `cancelled` result is a tool that
-/// was interrupted by a user stop while in flight (ticket #222): it is
-/// neither an ok nor a plain error — the transcript shows the cancellation
-/// as such.
+/// A tool's result: the model-facing output plus an explicit verdict set by
+/// the tool itself (which knows whether it succeeded) — the source of truth
+/// for the GUI status indicator. A `cancelled` result is a tool that was
+/// interrupted by a user stop while in flight (ticket #222): the work was cut,
+/// not failed, so the transcript shows the cancellation as such.
 ///
 /// `ui_detail` is the GUI-only channel (spec §5.4, ADR-0012): a split result
 /// carries it (the edit's diff, the write's content, the read's anchor-
 /// stripped body) while `output` keeps what the model needs. Context assembly
 /// structurally reads only `output`, so the detail can never leak into the
 /// model's context. Errors are single-channel: `ui_detail` stays `None`.
+///
+/// The verdict is the wire's `ToolStatus`, not a pair of flags: the fourth
+/// pair a `bool × bool` can name (`cancelled` with `ok`) has no constructor
+/// here, and the fields are private so it has no construction site (audit
+/// Add5-T2).
 #[derive(Debug, Clone)]
 pub struct ToolResult {
-    pub output: ToolOutput,
-    pub ui_detail: Option<ToolOutput>,
-    pub ok: bool,
-    pub cancelled: bool,
+    output: ToolOutput,
+    ui_detail: Option<ToolOutput>,
+    status: ToolStatus,
 }
 
 impl ToolResult {
@@ -53,8 +56,7 @@ impl ToolResult {
         Self {
             output,
             ui_detail: None,
-            ok: true,
-            cancelled: false,
+            status: ToolStatus::Ok,
         }
     }
 
@@ -65,8 +67,7 @@ impl ToolResult {
         Self {
             output,
             ui_detail: Some(detail),
-            ok: true,
-            cancelled: false,
+            status: ToolStatus::Ok,
         }
     }
 
@@ -75,11 +76,19 @@ impl ToolResult {
         Self {
             output,
             ui_detail: None,
-            ok: false,
-            cancelled: false,
+            status: ToolStatus::Error,
         }
     }
-
+    /// The verdict the tool computes from its own output (bash: the exit
+    /// code), with no detail channel.
+    #[must_use]
+    pub const fn with_status(output: ToolOutput, status: ToolStatus) -> Self {
+        Self {
+            output,
+            ui_detail: None,
+            status,
+        }
+    }
     /// A result produced by cancelling the tool mid-flight (a user stop,
     /// ticket #222): the work was cut, not failed.
     #[must_use]
@@ -87,21 +96,33 @@ impl ToolResult {
         Self {
             output,
             ui_detail: None,
-            ok: false,
-            cancelled: true,
+            status: ToolStatus::Cancelled,
         }
     }
 
-    /// The verdict this result reports, for `ToolPayload.status`.
+    /// The verdict, the same type `ToolPayload::status` carries.
     #[must_use]
-    pub const fn status(&self) -> tau_protocol::payload::ToolStatus {
-        if self.cancelled {
-            tau_protocol::payload::ToolStatus::Cancelled
-        } else if self.ok {
-            tau_protocol::payload::ToolStatus::Ok
-        } else {
-            tau_protocol::payload::ToolStatus::Error
-        }
+    pub const fn status(&self) -> ToolStatus {
+        self.status
+    }
+
+    /// The output as the model sees it.
+    #[must_use]
+    pub fn output(&self) -> &ToolOutput {
+        &self.output
+    }
+
+    /// The GUI-only detail channel, `None` on a non-split result.
+    #[must_use]
+    pub fn ui_detail(&self) -> Option<&ToolOutput> {
+        self.ui_detail.as_ref()
+    }
+
+    /// The result split into the payload's two channels: the entry owns both;
+    /// context assembly reads only the first (spec §5.4).
+    #[must_use]
+    pub fn into_parts(self) -> (ToolOutput, Option<ToolOutput>) {
+        (self.output, self.ui_detail)
     }
     /// A typed verdict from a `Result<String, String>` source: `Ok` maps to a
     /// success, `Err` to a failure — a surface tool's `Result` becomes a
@@ -114,7 +135,10 @@ impl ToolResult {
     }
 }
 
-/// The model-facing definitions of the four core tools.
+/// The model-facing definitions of the four core tools. Each core spec's
+/// `required` array is the same list `dispatch` enforces (`args::*_REQUIRED`),
+/// so the contract shipped to the model is the contract a call is checked
+/// against — the two cannot drift (audit Add5-T1).
 #[must_use]
 #[allow(clippy::too_many_lines)] // the tool table is data, not logic
 pub fn tool_specs() -> Vec<ToolSpec> {
@@ -137,7 +161,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                     "offset": {"type": "string", "description": "1-based line number, or a 4-letter anchor of a line in this file"},
                     "limit": {"type": "integer", "minimum": 1}
                 },
-                "required": ["path"]
+                "required": json!(args::READ_REQUIRED)
             }),
         },
         ToolSpec {
@@ -150,7 +174,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                     "path": {"type": "string"},
                     "content": {"type": "string"}
                 },
-                "required": ["path", "content"]
+                "required": json!(args::WRITE_REQUIRED)
             }),
         },
         ToolSpec {
@@ -182,11 +206,11 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                                 "to": {"type": "string"},
                                 "content": {"type": "string"}
                             },
-                            "required": ["from", "to", "content"]
+                            "required": json!(args::EDIT_MEMBER_REQUIRED)
                         }
                     }
                 },
-                "required": ["path", "edits"]
+                "required": json!(args::EDIT_REQUIRED)
             }),
         },
         ToolSpec {
@@ -205,7 +229,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                     "timeout_secs": {"type": "integer", "minimum": 1},
                     "background": {"type": "boolean", "default": false, "description": "detach: run the command as a background job and return immediately with its output file path"}
                 },
-                "required": ["command"]
+                "required": json!(args::BASH_REQUIRED)
             }),
         },
         ToolSpec {
@@ -323,6 +347,7 @@ pub fn child_tool_specs() -> Vec<ToolSpec> {
     v
 }
 
+pub(crate) mod args;
 pub(crate) mod bgjobs;
 mod edit_diff;
 mod impls;

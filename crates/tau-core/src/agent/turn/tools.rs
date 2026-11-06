@@ -190,6 +190,7 @@ impl AgentSession {
                 ))),
             };
             let status = result.status();
+            let (output, ui_detail) = result.into_parts();
             self.append_id(
                 &entry_id,
                 EntryKind::Tool,
@@ -197,8 +198,8 @@ impl AgentSession {
                     call_id: call.call_id.clone(),
                     name: call.name.clone(),
                     args,
-                    output: result.output,
-                    ui_detail: result.ui_detail,
+                    output,
+                    ui_detail,
                     status: Some(status),
                 }
                 .to_value(),

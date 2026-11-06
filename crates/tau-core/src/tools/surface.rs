@@ -4,8 +4,9 @@
 //! names; the spawn-time agent-type filter lives here, not smeared across
 //! the loop, the spawn, and the agent.
 
+use super::args::{CoreArgs, parse_core};
 use super::impls::{bash_inner, edit, read, resolve, write};
-use super::{ToolCall, ToolResult};
+use super::{ToolCall, ToolResult, ToolStatus};
 use crate::agent::AgentSession;
 use crate::harness::SessionRole;
 use crate::provider::ToolSpec;
@@ -79,92 +80,83 @@ pub struct DispatchCtx<'a> {
 /// `if let Some(sup)` swallowed every core tool into `route_parent`, which
 /// only knows sub-agent names), and a child carries a link AND core tools.
 pub async fn dispatch(ctx: DispatchCtx<'_>, call: &ToolCall) -> ToolResult {
-    match call.name.as_str() {
-        "recall" => ToolResult::from_result(ctx.session.recall_scoped(&call.args)),
-        // Cross-session: routed through the supervisor, which runs both
-        // sides on the sessions' own stores (review B3).
-        name if name.starts_with("subagent_") => match ctx.supervisor.as_ref() {
-            Some(sup) => ToolResult::from_result(crate::subagent::route_parent(sup, call)),
-            None => ToolResult::err(format!("{name}: not available in this session").into()),
-        },
-        "parent_notify" => match ctx.child.as_deref() {
-            Some(link) => ToolResult::ok(link.notify(&call.args).into()),
-            None => ToolResult::err("parent_notify: not available in a top-level session".into()),
-        },
+    // The schema's `required` set is enforced here, once per call (audit
+    // Add5-T1): the core impls take the parsed shape, so no entry point
+    // re-reads `args` and the enforced contract cannot drift from the one
+    // shipped to the model.
+    let core = match parse_core(&call.name, &call.args) {
+        Ok(core) => core,
+        Err(e) => return ToolResult::err(e.into()),
+    };
+    match core {
         // Core tools: the read/edit pair is stateful per session (the anchor
         // registry, spec §5.4) — it borrows the session's registry for the
         // call; write and bash are stateless.
-        "read" => {
+        Some(CoreArgs::Read(args)) => {
             let anchors = ctx.session.anchors();
             let mut reg = anchors.lock();
             read(
                 ctx.cwd,
-                &call.args,
+                &args,
                 ctx.image_max_bytes,
                 ctx.image_max_pixels,
                 Some(&mut *reg),
             )
         }
-        "write" => {
-            let path_arg = call.args.get("path").and_then(serde_json::Value::as_str);
-            let res = write(ctx.cwd, &call.args, ctx.progress).await;
-            if res.ok
-                && let Some(path) = path_arg
-            {
+        Some(CoreArgs::Write(args)) => {
+            let res = write(ctx.cwd, &args, ctx.progress).await;
+            if res.status() == ToolStatus::Ok {
                 // A write is a file drift: drop the served baseline so the next
                 // read re-anchors (item 3). The key is the resolved path — how
                 // read and edit key the registry — so a relative path from the
                 // model voids its anchors instead of missing them (§5.4).
                 let anchors = ctx.session.anchors();
                 let mut reg = anchors.lock();
-                reg.free(&resolve(ctx.cwd, path).display().to_string());
+                reg.free(&resolve(ctx.cwd, &args.path).display().to_string());
             }
             res
         }
-        "bash" => {
-            // Background bash (#53): detached — the call returns with the
-            // job id and output path; the session's completion hook wakes it
-            // when the job exits. The schema declares `command` required
-            // (tools.rs), so it is parsed once, above the split: the background
-            // branch must not invent an empty command (a `bash -c ''` job that
-            // exits 0 and reports as started).
-            let background = call
-                .args
-                .get("background")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let Some(command) = call.args.get("command").and_then(serde_json::Value::as_str) else {
-                return ToolResult::err("bash: missing \"command\"".into());
-            };
-            if background {
+        Some(CoreArgs::Bash(args)) => {
+            // Background bash (#53): detached — the call returns with the job
+            // id and output path; the session's completion hook wakes it when
+            // the job exits. `command` is parsed above the split, so the
+            // background branch cannot invent an empty command (a `bash -c ''`
+            // job that exits 0 and reports as started).
+            if args.background {
                 let (jobs, on_done) = (ctx.session.background_jobs(), ctx.session.job_hook());
-                match crate::tools::bgjobs::spawn(ctx.cwd, command, &jobs, on_done) {
+                match crate::tools::bgjobs::spawn(ctx.cwd, &args.command, &jobs, on_done) {
                     Ok((id, path)) => {
                         ToolResult::ok(crate::tools::bgjobs::spawn_output(&id, &path).into())
                     }
                     Err(e) => ToolResult::err(e.into()),
                 }
             } else {
-                bash_inner(
-                    ctx.cwd,
-                    command,
-                    &call.args,
-                    &ctx.session.stop_flag(),
-                    ctx.progress,
-                )
-                .await
+                bash_inner(ctx.cwd, &args, &ctx.session.stop_flag(), ctx.progress).await
             }
         }
-        "edit" => {
-            let strict = call
-                .args
-                .get("strict")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
+        Some(CoreArgs::Edit(args)) => {
             let anchors = ctx.session.anchors();
             let mut reg = anchors.lock();
-            edit(ctx.cwd, &call.args, Some(&mut *reg), strict)
+            edit(ctx.cwd, args, Some(&mut *reg))
         }
-        other => ToolResult::err(format!("unknown tool: {other}").into()),
+        // Non-core routes keep the raw args: their schemas are declared and
+        // parsed on the side that owns them (`recall`, the supervisor, the
+        // child's link).
+        None => match call.name.as_str() {
+            "recall" => ToolResult::from_result(ctx.session.recall_scoped(&call.args)),
+            // Cross-session: routed through the supervisor, which runs both
+            // sides on the sessions' own stores (review B3).
+            name if name.starts_with("subagent_") => match ctx.supervisor.as_ref() {
+                Some(sup) => ToolResult::from_result(crate::subagent::route_parent(sup, call)),
+                None => ToolResult::err(format!("{name}: not available in this session").into()),
+            },
+            "parent_notify" => match ctx.child.as_deref() {
+                Some(link) => ToolResult::ok(link.notify(&call.args).into()),
+                None => {
+                    ToolResult::err("parent_notify: not available in a top-level session".into())
+                }
+            },
+            other => ToolResult::err(format!("unknown tool: {other}").into()),
+        },
     }
 }
