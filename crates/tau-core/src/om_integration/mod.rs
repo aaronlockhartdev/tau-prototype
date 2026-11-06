@@ -102,14 +102,18 @@ pub(crate) fn apply_generation(
     request
 }
 
+/// The thresholds the passes run with, folded from the `[om]` section. The
+/// config states the buffer's fill step in absolute tokens; Mastra derives the
+/// same number twice from ratios, and the fold carries it across with no ratio
+/// and no float. Clamped into the threshold: an interval past the window would
+/// floor above the window it floors (`retention_floor`), and activation would
+/// remove nothing.
 fn om_config_of(om: &crate::config::Om) -> OmConfig {
-    let observe = f64::from(threshold_u32(om.observe_threshold.max(1)));
-    let activation =
-        (1.0 - f64::from(threshold_u32(om.buffer_increment)) / observe).clamp(0.0, 1.0);
+    let observe = threshold_u32(om.observe_threshold);
     OmConfig {
-        observe_threshold: threshold_u32(om.observe_threshold),
+        observe_threshold: observe,
         reflect_threshold: threshold_u32(om.reflect_threshold),
-        buffer_activation: activation,
+        buffer_increment: threshold_u32(om.buffer_increment).min(observe),
         share_token_budget: false,
         retries: om.retries.clone(),
         generation: om.generation.clone(),

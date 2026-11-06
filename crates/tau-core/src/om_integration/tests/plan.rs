@@ -339,7 +339,7 @@ fn a_fully_buffered_window_plans_done_not_an_empty_slice() {
     let unobserved = state.unobserved(&mut store).unwrap();
     // The leg's premise: the gate quantity is the raw window, unchanged by
     // buffering, and the arm's gate passes.
-    assert!(state.pending_tokens(&unobserved) >= state.config.buffer_increment());
+    assert!(state.pending_tokens(&unobserved) >= state.config.buffer_increment);
     match state.plan(&unobserved) {
         TurnEndAction::Done => {}
         other => panic!("expected Done over a fully-buffered window, got {other:?}"),
