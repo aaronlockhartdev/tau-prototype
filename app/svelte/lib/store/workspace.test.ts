@@ -146,6 +146,19 @@ describe('closeWorkspace', () => {
     expect(store.current).toBe('s2');
   });
 
+  it('closing a workspace drops the card-expansion rows of the sessions it removed', async () => {
+    // The same prune deleteSession applies, at the other producer: the rows
+    // keyed on the closed workspace's sessions die with the tab.
+    store.workspaces = [WS, WS2];
+    store.sessions = applySessionList({}, [meta('s1'), meta('s2', WS2.id)]);
+    store.current = 's2';
+    store.entryOpen.set('s1:e0:tool', true);
+    store.entryOpen.set('s2:e0:tool', true);
+    mockIPC(() => ({ kind: 'none' }));
+    await closeWorkspace(WS);
+    expect([...store.entryOpen.keys()]).toEqual(['s2:e0:tool']);
+  });
+
   it('sends the workspace_close command to persist the close', async () => {
     store.workspaces = [WS];
     store.sessions = applySessionList({}, [meta('s1')]);

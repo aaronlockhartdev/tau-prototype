@@ -11,6 +11,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(() => Promise.resolve(
 import type { Command, CommandOutput, SessionMeta, Workspace } from '../wire/protocol';
 import { applySessionList } from '../rules/sessions';
 import { archiveSession, deleteSession, restoreSession, store } from './store.svelte';
+import { freshStore } from '../testing/store-harness';
 
 const WS: Workspace = { id: 'w1', name: 'proj', cwd: '/tmp/proj' };
 
@@ -53,22 +54,6 @@ function defaultIPC(over: Partial<Record<Command['type'], (cmd: Command) => Comm
   });
 }
 
-function freshStore() {
-  store.workspaces = [];
-  store.current = null;
-  store.sessions = {};
-  store.files = {};
-  store.fileErrors = {};
-  store.skills = {};
-  store.providers = {};
-  store.pane = {};
-  store.tabSelected = [];
-  store.tabSelAnchor = null;
-  store.loading = false;
-  store.error = null;
-  store.tailJump = 0;
-  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-}
 
 beforeEach(() => {
   freshStore();
@@ -142,5 +127,25 @@ describe('session archive / restore / delete', () => {
     expect(store.sessions['s1']).toBeUndefined();
     expect(store.sessions['c1']).toBeUndefined();
     expect(store.sessions['s2']).toBeTruthy();
+  });
+
+  it('delete: the cascade drops its card-expansion rows, a survivor keeps its own', async () => {
+    // entryOpen keys `${session}:${entryId}:${slot}` (EntryCard). The prune is
+    // the store's job: the transcript is unmounted while the center column
+    // shows the file viewer, so no component outlives a delete.
+    store.sessions = applySessionList({}, [
+      meta('s1'),
+      meta('c1', WS.id, { parent: 's1' }),
+      meta('s2')
+    ]);
+    store.entryOpen.set('s1:e0:tool', true);
+    store.entryOpen.set('c1:e0:think', true);
+    store.entryOpen.set('s2:e0:tool', true);
+    defaultIPC({
+      session_delete: () => ({ kind: 'none' }),
+      session_list: () => ({ kind: 'sessions', sessions: [meta('s2')] })
+    });
+    await deleteSession(WS.id, 's1');
+    expect([...store.entryOpen.keys()]).toEqual(['s2:e0:tool']);
   });
 });

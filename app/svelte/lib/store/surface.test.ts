@@ -31,6 +31,7 @@ import {
   toggleAllReasoning,
   windowTitle
 } from './store.svelte';
+import { freshStore } from '../testing/store-harness';
 
 const WS: Workspace = { id: 'w1', name: 'proj', cwd: '/tmp/proj' };
 
@@ -115,25 +116,6 @@ function defaultIPC(over: Partial<Record<Command['type'], (cmd: Command) => Comm
   mockIPC((cmd) => (over[cmd.type] ?? base[cmd.type])(cmd));
 }
 
-function freshStore() {
-  store.workspaces = [];
-  store.current = null;
-  store.sessions = {};
-  store.files = {};
-  store.fileErrors = {};
-  store.skills = {};
-  store.providers = {};
-  store.pane = {};
-  store.tabSelected = [];
-  store.tabSelAnchor = null;
-  store.loading = false;
-  store.error = null;
-  store.tailJump = 0;
-  store.reasoningOpen = true;
-  store.modelMenuOpen = false;
-  store.entryOpen = new Map();
-  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-}
 
 function oneSession(): void {
   store.sessions = openSession({}, 's1', snap('s1').snapshot);

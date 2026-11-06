@@ -66,6 +66,8 @@ export default [
       'svelte/lib/testing/store-harness.ts',
       'svelte/lib/display/presentation.svelte.test.ts',
       'svelte/components/Transcript.test.ts',
+      'svelte/lib/testing/store-harness.test.ts',
+      'svelte/lib/store/defaults.ts',
       'svelte/main.ts'
     ],
     rules: {

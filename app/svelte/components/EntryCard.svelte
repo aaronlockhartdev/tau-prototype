@@ -10,6 +10,7 @@
   import CardShell from './CardShell.svelte';
   import Markdown from './Markdown.svelte';
   import { onActivate } from '../lib/display/ui';
+  import { slotKey } from '../lib/rules/entryopen';
   import { Layers, Sparkles } from '@lucide/svelte';
 
   let {
@@ -38,7 +39,7 @@
   // expanded card); this local object is the reactive layer, seeded from
   // the map on mount. (Svelte 5.57 deep-proxies plain objects and arrays
   // in $state, but not Maps — the store map alone does not track.)
-  const okey = (slot: string) => `${heightKey}:${slot}`;
+  const okey = (slot: string) => slotKey(heightKey, slot);
   let open = $state({
     tool: !!store.entryOpen.get(okey('tool')),
     output: !!store.entryOpen.get(okey('output')),
