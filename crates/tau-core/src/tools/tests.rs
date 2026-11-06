@@ -1,6 +1,72 @@
-use super::impls::{bash, bash_inner, edit, read, write};
+use super::args::{BashArgs, EditArgs, ReadArgs, WriteArgs};
+use super::impls::{
+    bash_inner as bash_inner_impl, edit as edit_impl, read as read_impl, write as write_impl,
+};
 use super::*;
+pub use impls::bash;
+use std::sync::atomic::AtomicBool;
 
+// The core tools as the test files call them: the model's raw JSON in, the
+// parsed args out — the same parse `dispatch` runs, its refusal of a missing
+// required argument included (audit Add5-T1). An argument a test names that
+// the schema does not declare is refused at the seam the live dispatch
+// refuses it, so a shape test exercises the shipped contract, not a copy.
+
+pub fn read(
+    cwd: &Path,
+    args: &serde_json::Value,
+    image_max_bytes: Option<u64>,
+    image_max_pixels: Option<u64>,
+    registry: Option<&mut hashline::registry::Registry>,
+) -> ToolResult {
+    match ReadArgs::parse(args) {
+        Ok(a) => read_impl(cwd, &a, image_max_bytes, image_max_pixels, registry),
+        Err(e) => ToolResult::err(e.into()),
+    }
+}
+
+pub async fn write(
+    cwd: &Path,
+    args: &serde_json::Value,
+    progress: Option<&crate::tools::ToolProgress>,
+) -> ToolResult {
+    match WriteArgs::parse(args) {
+        Ok(a) => write_impl(cwd, &a, progress).await,
+        Err(e) => ToolResult::err(e.into()),
+    }
+}
+
+/// `strict` arrives as the parameter the tests pass it in, set on the parsed
+/// args: the live dispatch reads the same field from the schema's `strict` key.
+pub fn edit(
+    cwd: &Path,
+    args: &serde_json::Value,
+    registry: Option<&mut hashline::registry::Registry>,
+    strict: bool,
+) -> ToolResult {
+    match EditArgs::parse(args) {
+        Ok(mut a) => {
+            a.strict = strict;
+            edit_impl(cwd, a, registry)
+        }
+        Err(e) => ToolResult::err(e.into()),
+    }
+}
+
+pub async fn bash_inner(
+    cwd: &Path,
+    command: &str,
+    args: &serde_json::Value,
+    stop: &AtomicBool,
+    progress: Option<&crate::tools::ToolProgress>,
+) -> ToolResult {
+    let mut json = args.clone();
+    json["command"] = serde_json::Value::String(command.to_owned());
+    match BashArgs::parse(&json) {
+        Ok(a) => bash_inner_impl(cwd, &a, stop, progress).await,
+        Err(e) => ToolResult::err(e.into()),
+    }
+}
 /// A throwaway session registry for a test, locked for the call.
 pub fn fresh_registry() -> parking_lot::MutexGuard<'static, hashline::registry::Registry> {
     // A 'static guard is not possible; these tests own the registry for the
@@ -14,7 +80,7 @@ pub fn fresh_registry() -> parking_lot::MutexGuard<'static, hashline::registry::
 /// The text of a tool output: these tests assert on text, and an image
 /// block on these paths is a bug.
 pub fn text(out: ToolResult) -> String {
-    match out.output {
+    match out.into_parts().0 {
         ToolOutput::Text(t) => t,
         ToolOutput::Image { .. } => panic!("expected text, got an image block"),
     }
@@ -23,7 +89,7 @@ pub fn text(out: ToolResult) -> String {
 /// The GUI-only detail channel's text (#243): an `edit`'s diff, a `write`'
 /// content, a `read`'s anchor-stripped body. `None` on non-split results.
 pub fn detail(out: ToolResult) -> Option<String> {
-    match out.ui_detail {
+    match out.into_parts().1 {
         Some(ToolOutput::Text(t)) => Some(t),
         Some(ToolOutput::Image { .. }) => panic!("expected text detail, got an image block"),
         None => None,
@@ -230,10 +296,10 @@ async fn bash_and_errors_carry_no_ui_detail() {
     // line stays byte-identical to a pre-#243 record.
     let dir = tempfile::tempdir().unwrap();
     let res = bash(dir.path(), &json!({"command": "echo hi"})).await;
-    assert!(res.ui_detail.is_none(), "bash must not split: {res:?}");
+    assert!(res.ui_detail().is_none(), "bash must not split: {res:?}");
     let err = write(dir.path(), &json!({"content": "x"}), None).await;
     assert!(
-        err.ui_detail.is_none(),
+        err.ui_detail().is_none(),
         "an error is single-channel: {err:?}"
     );
 }

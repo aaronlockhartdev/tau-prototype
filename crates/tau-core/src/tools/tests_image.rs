@@ -1,5 +1,4 @@
-use super::impls::read;
-use super::tests::text;
+use super::tests::{read, text};
 use super::*;
 use base64::Engine;
 
@@ -35,7 +34,7 @@ const WEBP_B64: &str = "UklGRiQAAABXRUJQVlA4TBcAAAAvP8APAAdQ5OIVqv8BICH8f69F9D/1
 /// dimensions.
 fn assert_canonical_jpeg(dir: &std::path::Path, name: &str) {
     let result = read(dir, &json!({"path": name}), None, None, None);
-    let ToolOutput::Image(img) = result.output else {
+    let ToolOutput::Image(img) = result.output() else {
         panic!("expected an image block, got {result:?}");
     };
     assert_eq!(img.kind, "image");
@@ -97,8 +96,8 @@ async fn a_corrupt_image_is_refused_loudly() {
     )
     .unwrap();
     let result = read(dir.path(), &json!({"path": "broken.png"}), None, None, None);
-    assert!(!result.ok);
-    let ToolOutput::Text(t) = result.output else {
+    assert_eq!(result.status(), ToolStatus::Error);
+    let ToolOutput::Text(t) = result.output() else {
         panic!("expected a text refusal, got {result:?}");
     };
     assert!(t.contains("could not be decoded"), "{t}");
@@ -128,7 +127,7 @@ async fn an_over_budget_image_is_downscaled_to_the_pixel_budget() {
     // 2048×2048 = 4,194,304 px, double the 2,097,152 default budget.
     write_test_image_of_size(dir.path(), "large.png", 2048, 2048);
     let result = read(dir.path(), &json!({"path": "large.png"}), None, None, None);
-    let ToolOutput::Image(img) = result.output else {
+    let ToolOutput::Image(img) = result.output() else {
         panic!("expected an image block, got {result:?}");
     };
     let decoded = base64::engine::general_purpose::STANDARD
@@ -158,7 +157,7 @@ async fn a_tight_pixel_budget_downscales_an_oversized_image() {
         Some(65_536),
         None,
     );
-    let ToolOutput::Image(img) = result.output else {
+    let ToolOutput::Image(img) = result.output() else {
         panic!("expected an image block, got {result:?}");
     };
     let decoded = base64::engine::general_purpose::STANDARD

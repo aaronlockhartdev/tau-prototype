@@ -1,4 +1,5 @@
-use super::{Path, PathBuf, ToolOutput, ToolResult, hashline};
+use super::args::{BashArgs, EditArgs, ReadArgs, WriteArgs};
+use super::{Path, PathBuf, ToolOutput, ToolResult, ToolStatus, hashline};
 use base64::Engine;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -24,15 +25,12 @@ pub(super) const READ_MAX_LINE_BYTES: usize = 100 * 1024;
 
 pub(super) fn read(
     cwd: &Path,
-    args: &serde_json::Value,
+    args: &ReadArgs,
     image_max_bytes: Option<u64>,
     image_max_pixels: Option<u64>,
     registry: Option<&mut hashline::registry::Registry>,
 ) -> ToolResult {
-    let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
-        return ToolResult::err("read: missing \"path\"".into());
-    };
-    let path = resolve(cwd, path);
+    let path = resolve(cwd, &args.path);
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) => {
@@ -130,18 +128,10 @@ pub(super) fn read(
 fn read_page(
     path: &str,
     content: &str,
-    args: &serde_json::Value,
+    args: &ReadArgs,
     mut registry: Option<&mut hashline::registry::Registry>,
 ) -> Result<super::read_page::ReadPage, String> {
-    let offset_arg = args
-        .get("offset")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|v| usize::try_from(v).ok());
-
+    let limit = args.limit;
     let (rows, reclaim) = match registry.as_deref_mut() {
         Some(reg) => {
             let (hashes, reclaim) = reg
@@ -156,7 +146,7 @@ fn read_page(
     };
     let total = rows.len();
 
-    let start_line = match &offset_arg {
+    let start_line = match args.offset.as_deref() {
         Some(s) if s.chars().all(|c| c.is_ascii_digit()) => {
             s.parse::<usize>().map_or(1, |n| n.max(1))
         }
@@ -282,15 +272,10 @@ fn encode_jpeg_q85(img: &image::DynamicImage) -> Result<Vec<u8>, image::ImageErr
 
 pub(super) async fn write(
     cwd: &Path,
-    args: &serde_json::Value,
+    args: &WriteArgs,
     progress: Option<&crate::tools::ToolProgress>,
 ) -> ToolResult {
-    let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
-        return ToolResult::err("write: missing \"path\"".into());
-    };
-    let Some(content) = args.get("content").and_then(|v| v.as_str()) else {
-        return ToolResult::err("write: missing \"content\"".into());
-    };
+    let content = args.content.as_str();
     // Issue #197: a large write streams its content in-flight. Since #243
     // the final result is the ack only, so the in-flight content rides the
     // `ui_detail` channel — the live card and the final card render from the
@@ -298,7 +283,7 @@ pub(super) async fn write(
     if let Some(p) = progress {
         p.report_detail(content);
     }
-    let path = resolve(cwd, path);
+    let path = resolve(cwd, &args.path);
     if let Some(parent) = path.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
@@ -417,49 +402,18 @@ fn write_atomic_bytes_inner(
     }
     result
 }
-/// Parse and validate the `path` + `edits` arguments of an `edit` call.
-fn parse_edit_args(args: &serde_json::Value) -> Result<(String, Vec<hashline::Edit>), String> {
-    let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
-        return Err("edit: missing \"path\"".to_owned());
-    };
-    let Some(edits_json) = args.get("edits").and_then(|v| v.as_array()) else {
-        return Err("edit: \"edits\" array is required".to_owned());
-    };
-    if edits_json.is_empty() {
-        return Err("edit: \"edits\" must contain at least one edit".to_owned());
-    }
-    let mut edits = Vec::with_capacity(edits_json.len());
-    for (i, item) in edits_json.iter().enumerate() {
-        let (Some(from), Some(to), Some(content)) = (
-            item.get("from").and_then(|v| v.as_str()),
-            item.get("to").and_then(|v| v.as_str()),
-            item.get("content").and_then(|v| v.as_str()),
-        ) else {
-            return Err(format!(
-                "edit: edits[{i}] requires \"from\", \"to\", and \"content\""
-            ));
-        };
-        edits.push(hashline::Edit {
-            from: from.to_owned(),
-            to: to.to_owned(),
-            content: content.to_owned(),
-        });
-    }
-    Ok((path.to_owned(), edits))
-}
-
 #[allow(clippy::too_many_lines)] // the #243 ack + detail tail pushed it 3 over
 pub(super) fn edit(
     cwd: &Path,
-    args: &serde_json::Value,
+    args: EditArgs,
     mut registry: Option<&mut hashline::registry::Registry>,
-    strict: bool,
 ) -> ToolResult {
-    let (path, edits) = match parse_edit_args(args) {
-        Ok(v) => v,
-        Err(e) => return ToolResult::err(e.into()),
-    };
-    let path = resolve(cwd, &path);
+    let EditArgs {
+        path: path_arg,
+        edits,
+        strict,
+    } = args;
+    let path = resolve(cwd, &path_arg);
     let path_str = path.display().to_string();
     // (3) Drift re-read at commit: the file is read twice — once to plan,
     // once to commit — and a change between the two aborts the write.
@@ -770,16 +724,12 @@ enum BashLeg {
 #[allow(clippy::too_many_lines)] // one streaming child: spawn, read, race stop
 pub(super) async fn bash_inner(
     cwd: &Path,
-    command: &str,
-    args: &serde_json::Value,
+    args: &BashArgs,
     stop: &AtomicBool,
     progress: Option<&crate::tools::ToolProgress>,
 ) -> ToolResult {
-    let timeout_secs = args
-        .get("timeout_secs")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(60)
-        .max(1);
+    let command = args.command.as_str();
+    let timeout_secs = args.timeout_secs;
     // #249: line-buffer the child's stdio when stdbuf is available; a piped
     // stdout is block-buffered by default, so a long command's output would
     // otherwise land only at exit. Absent stdbuf degrades to plain bash
@@ -850,22 +800,22 @@ pub(super) async fn bash_inner(
         out.push_str("\n--- stderr ---\n");
         out.push_str(&stderr);
     }
-    ToolResult {
-        output: out.into(),
-        ui_detail: None,
-        ok: code == 0,
-        cancelled: false,
-    }
+    let status = if code == 0 {
+        ToolStatus::Ok
+    } else {
+        ToolStatus::Error
+    };
+    ToolResult::with_status(out.into(), status)
 }
 
 /// The `bash` tool as the tests see it: a command with no stop signal (a
 /// fresh, never-set flag). The live dispatch path (`surface.rs`) calls
 /// [`bash_inner`] with the session's real stop flag.
 #[cfg(test)]
-pub(super) async fn bash(cwd: &Path, args: &serde_json::Value) -> ToolResult {
+pub async fn bash(cwd: &Path, args: &serde_json::Value) -> ToolResult {
     let no_stop = AtomicBool::new(false);
-    let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
-        return ToolResult::err("bash: missing \"command\"".into());
-    };
-    bash_inner(cwd, command, args, &no_stop, None).await
+    match BashArgs::parse(args) {
+        Ok(a) => bash_inner(cwd, &a, &no_stop, None).await,
+        Err(e) => ToolResult::err(e.into()),
+    }
 }

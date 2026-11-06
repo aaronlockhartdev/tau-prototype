@@ -1,5 +1,4 @@
-use super::impls::{edit, read, write};
-use super::tests::{detail, fresh_registry, text};
+use super::tests::{detail, edit, fresh_registry, read, text, write};
 use super::*;
 
 #[tokio::test]
