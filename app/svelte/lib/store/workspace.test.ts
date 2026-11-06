@@ -152,11 +152,11 @@ describe('closeWorkspace', () => {
     store.workspaces = [WS, WS2];
     store.sessions = applySessionList({}, [meta('s1'), meta('s2', WS2.id)]);
     store.current = 's2';
-    store.entryOpen.set('s1:e0:tool', true);
-    store.entryOpen.set('s2:e0:tool', true);
+    store.entryOpen['s1:e0:tool'] = true;
+    store.entryOpen['s2:e0:tool'] = true;
     mockIPC(() => ({ kind: 'none' }));
     await closeWorkspace(WS);
-    expect([...store.entryOpen.keys()]).toEqual(['s2:e0:tool']);
+    expect(Object.keys(store.entryOpen)).toEqual(['s2:e0:tool']);
   });
 
   it('sends the workspace_close command to persist the close', async () => {

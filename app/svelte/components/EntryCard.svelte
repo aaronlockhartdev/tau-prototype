@@ -55,15 +55,6 @@
   // The 'r' keybind toggles every reasoning line at once (store global); a
   // click stores a per-entry override that then wins, so a clicked line keeps
   // its state across global flips.
-  let thinkSynced = $state(false);
-  $effect(() => {
-    void store.reasoningOpen;
-    if (store.reasoningOpen !== thinkSynced) {
-      thinkSynced = store.reasoningOpen;
-      open.think = store.entryOpen.get(okey('think')) ?? store.reasoningOpen;
-    }
-  });
-
   const p = $derived(present(entry, { sourceLabel, parentLabel, parentId }));
 
 </script>

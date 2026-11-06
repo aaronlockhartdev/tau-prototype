@@ -138,14 +138,14 @@ describe('session archive / restore / delete', () => {
       meta('c1', WS.id, { parent: 's1' }),
       meta('s2')
     ]);
-    store.entryOpen.set('s1:e0:tool', true);
-    store.entryOpen.set('c1:e0:think', true);
-    store.entryOpen.set('s2:e0:tool', true);
+    store.entryOpen['s1:e0:tool'] = true;
+    store.entryOpen['c1:e0:think'] = true;
+    store.entryOpen['s2:e0:tool'] = true;
     defaultIPC({
       session_delete: () => ({ kind: 'none' }),
       session_list: () => ({ kind: 'sessions', sessions: [meta('s2')] })
     });
     await deleteSession(WS.id, 's1');
-    expect([...store.entryOpen.keys()]).toEqual(['s2:e0:tool']);
+    expect(Object.keys(store.entryOpen)).toEqual(['s2:e0:tool']);
   });
 });

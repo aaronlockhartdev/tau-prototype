@@ -17,7 +17,7 @@ vi.mock('../lib/store/store.svelte', async () => {
 
 const user = userEvent.setup();
 
-// entryOpen is a Map on the shared mock store: reset it per test so the
+// entryOpen is the shared mock store's keyed record: reset it per test so the
 // expansion state one test toggled does not seed the next one's mount.
 beforeEach(() => {
   resetMockStore();
