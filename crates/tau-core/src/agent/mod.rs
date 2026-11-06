@@ -161,8 +161,11 @@ pub struct TurnConfig {
     pub image_max_bytes: Option<u64>,
     /// The `limits.image.max_pixels` decode-area budget for a `read` of an
     /// image file (#257): above it, the image is downscaled, not refused.
-    /// `None` falls back to the default budget.
-    pub image_max_pixels: Option<u64>,
+    /// A required fact, validated positive at the load (audit Add6-T6): the
+    /// producer (`derive_turn`) sends the config's budget, so no leaf default
+    /// launders a configured value. A turn with no config behind it carries
+    /// the same default the config's default declares.
+    pub image_max_pixels: u64,
 }
 
 pub(crate) use crate::provider::{clamp_max_output, prompt_budget};
@@ -185,7 +188,7 @@ impl Default for TurnConfig {
             address: None,
             context_window: crate::config::Provider::DEFAULT_WINDOW,
             image_max_bytes: None,
-            image_max_pixels: None,
+            image_max_pixels: crate::config::ImageLimits::default().max_pixels,
         }
     }
 }

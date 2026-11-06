@@ -12,11 +12,17 @@ use std::sync::atomic::AtomicBool;
 // the schema does not declare is refused at the seam the live dispatch
 // refuses it, so a shape test exercises the shipped contract, not a copy.
 
+/// The decode-area budget a config with no `[limits.image]` section ships
+/// (the `ImageLimits` default, spelled as the literal it declares): the
+/// `read` leaf honours the number it is handed (audit Add6-T6), so a test
+/// of a text file names this, not an absent budget.
+pub(crate) const DEFAULT_BUDGET: u64 = 2_097_152;
+
 pub fn read(
     cwd: &Path,
     args: &serde_json::Value,
     image_max_bytes: Option<u64>,
-    image_max_pixels: Option<u64>,
+    image_max_pixels: u64,
     registry: Option<&mut hashline::registry::Registry>,
 ) -> ToolResult {
     match ReadArgs::parse(args) {
@@ -110,7 +116,7 @@ async fn write_then_read_roundtrip_with_anchors() {
         dir.path(),
         &json!({"path": "a.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let rows: Vec<&str> = out.lines().collect();
@@ -206,10 +212,16 @@ async fn core_tools_carry_a_typed_verdict() {
     let err = bash(cwd, &json!({"command": "false"})).await;
     assert_eq!(err.status(), ToolStatus::Error);
     // read: a missing file is an error; a present one is ok.
-    let err = read(cwd, &json!({"path": "missing.txt"}), None, None, None);
+    let err = read(
+        cwd,
+        &json!({"path": "missing.txt"}),
+        None,
+        DEFAULT_BUDGET,
+        None,
+    );
     assert_eq!(err.status(), ToolStatus::Error);
     std::fs::write(cwd.join("a.txt"), "hi\n").unwrap();
-    let ok = read(cwd, &json!({"path": "a.txt"}), None, None, None);
+    let ok = read(cwd, &json!({"path": "a.txt"}), None, DEFAULT_BUDGET, None);
     assert_eq!(ok.status(), ToolStatus::Ok);
     // write: a clean write is ok.
     let ok = write(cwd, &json!({"path": "b.txt", "content": "x"}), None).await;

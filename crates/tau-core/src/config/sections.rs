@@ -418,6 +418,19 @@ pub struct ImageLimits {
     pub jpeg_quality: u8,
 }
 
+impl ImageLimits {
+    // A budget of 0 downscales every image to 1×1 (`downscale_to_budget`
+    // floors the scale at one pixel per axis): the config is the error, not
+    // the read (audit Add6-T6 — the budget is a required fact, so the load
+    // validates it and the read carries it un-optional).
+    pub(super) fn validate(&self) -> Result<(), LoadError> {
+        if self.max_pixels == 0 {
+            return Err(LoadError::ImagePixelsZero);
+        }
+        Ok(())
+    }
+}
+
 impl Default for ImageLimits {
     fn default() -> Self {
         Self {

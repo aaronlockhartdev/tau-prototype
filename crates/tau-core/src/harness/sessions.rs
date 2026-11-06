@@ -552,7 +552,7 @@ pub(crate) fn derive_turn(
         // declares, where it refuses rather than runs unbounded.
         context_window: def.map_or(0, |d| d.context_window),
         image_max_bytes: Some(config.limits.image.max_bytes),
-        image_max_pixels: Some(config.limits.image.max_pixels),
+        image_max_pixels: config.limits.image.max_pixels,
         // Resolved here, applied at the request: the id the session carries and
         // the key the endpoint is addressed by (§6.7).
         address: Some(ModelAddress {

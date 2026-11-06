@@ -125,8 +125,42 @@ fn a_zero_output_cap_fails_to_load() {
             format!("{key} declares max_tokens = 0; the output cap must be positive")
         );
         // A validation failure is the merged config's property, not one file's.
+        // A validation failure is the merged config's property, not one file's.
         assert_eq!(err.path(), None, "the refusal names no layer (#337)");
     }
+}
+
+#[test]
+fn a_zero_pixel_budget_fails_to_load() {
+    // Add6-T6: `read` floors its downscale at one pixel per axis, so a budget
+    // of 0 flattens every image the session reads. The budget is a required
+    // fact the leaf honours verbatim, so the load owns the positivity.
+    let err = load_from(
+        "[providers.dev]\nbase_url = \"http://x/v1\"\n\n[providers.dev.models.\"m1\"]\ncontext_window = 8192\n\n[limits.image]\nmax_pixels = 0\n",
+        "",
+    )
+    .expect_err("a budget of 0 is a config error");
+    assert!(
+        matches!(&err, LoadError::ImagePixelsZero),
+        "expected the pixel-budget error, got {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "limits.image.max_pixels = 0: a budget of 0 downscales every image to 1×1; use at least 1"
+    );
+    assert_eq!(err.path(), None, "the refusal names no layer (#337)");
+}
+
+#[test]
+fn a_declared_pixel_budget_loads() {
+    // The positive half: the budget the user declares is the number that
+    // reaches the config, whole — `derive_turn` ships it to the read as-is.
+    let config = load_from(
+        "[providers.dev]\nbase_url = \"http://x/v1\"\n\n[providers.dev.models.\"m1\"]\ncontext_window = 8192\n\n[limits.image]\nmax_pixels = 1\n",
+        "",
+    )
+    .unwrap();
+    assert_eq!(config.limits.image.max_pixels, 1);
 }
 
 #[test]

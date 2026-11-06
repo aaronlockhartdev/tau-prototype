@@ -1,4 +1,4 @@
-use super::tests::{detail, edit, fresh_registry, read, text, write};
+use super::tests::{DEFAULT_BUDGET, detail, edit, fresh_registry, read, text, write};
 use super::*;
 
 #[tokio::test]
@@ -15,7 +15,7 @@ async fn read_pages_with_offset_and_limit() {
         dir.path(),
         &json!({"path": "p.txt", "offset": "2", "limit": 2}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     assert!(out.contains("lines 2–3 of 4"), "{out}");
@@ -37,7 +37,7 @@ async fn read_offset_accepts_an_anchor() {
         dir.path(),
         &json!({"path": "p.txt", "limit": 2}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     // The first shown line's anchor, used as the next page's offset.
@@ -53,7 +53,7 @@ async fn read_offset_accepts_an_anchor() {
         dir.path(),
         &json!({"path": "p.txt", "offset": anchor, "limit": 2}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     // Resuming from the anchor shows that line and the one after.
@@ -76,7 +76,7 @@ async fn read_ui_detail_is_the_anchor_stripped_body() {
         dir.path(),
         &json!({"path": "p.txt", "limit": 4}),
         None,
-        None,
+        DEFAULT_BUDGET,
         None,
     );
     let out = text(res.clone());
@@ -119,7 +119,7 @@ async fn oversized_read_line_gets_an_inline_sed_hint() {
         dir.path(),
         &json!({"path": "big.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     // The placeholder names the exact line and the exact command; the summary

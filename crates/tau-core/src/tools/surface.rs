@@ -62,7 +62,9 @@ pub struct DispatchCtx<'a> {
     pub cwd: &'a Path,
     pub image_max_bytes: Option<u64>,
     /// #257: the decode-area budget; above it, `read` downscales the image.
-    pub image_max_pixels: Option<u64>,
+    /// A required fact end to end (audit Add6-T6): the config validates it
+    /// positive, `derive_turn` ships it, the leaf honours it verbatim.
+    pub image_max_pixels: u64,
     /// The call's in-flight progress handle (issue #197): a streaming tool
     /// (bash) reports its growing output through it. `None` for a call with
     /// no live wire path (the direct test path).

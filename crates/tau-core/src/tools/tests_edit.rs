@@ -1,4 +1,4 @@
-use super::tests::{detail, edit, fresh_registry, read, text, write};
+use super::tests::{DEFAULT_BUDGET, detail, edit, fresh_registry, read, text, write};
 use super::*;
 use std::fmt::Write as _;
 
@@ -37,7 +37,7 @@ async fn crlf_files_preserve_their_line_endings() {
         dir.path(),
         &json!({"path": "w.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     // The read normalizes for the model (no \r in the anchor rows).
@@ -75,7 +75,7 @@ async fn edit_output_is_bounded_to_the_changed_region() {
         dir.path(),
         &json!({"path": "big.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -114,7 +114,7 @@ async fn edit_pure_deletion_reports_the_removed_line_not_no_change() {
         dir.path(),
         &json!({"path": "del.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -163,7 +163,7 @@ async fn edit_output_is_a_bounded_before_after_diff() {
         dir.path(),
         &json!({"path": "d.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -231,7 +231,7 @@ async fn edit_diff_over_the_cap_still_renders_the_head() {
         dir.path(),
         &json!({"path": "big.txt", "offset": "1", "limit": 220}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let rows: Vec<&str> = read_out.lines().collect();
@@ -293,7 +293,7 @@ async fn edit_array_form_applies_all_edits() {
         dir.path(),
         &json!({"path": "m.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -336,7 +336,7 @@ async fn edit_overlapping_ranges_demotes_the_colliding_member() {
         dir.path(),
         &json!({"path": "o.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -390,7 +390,7 @@ async fn edit_batch_with_one_valid_and_one_invalid_demotes_the_invalid() {
         dir.path(),
         &json!({"path": "d.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -439,7 +439,7 @@ async fn edit_anchored_content_is_stripped_in_lenient_mode() {
         dir.path(),
         &json!({"path": "a.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -481,7 +481,7 @@ async fn edit_anchored_content_is_rejected_in_strict_mode() {
         dir.path(),
         &json!({"path": "a.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -519,7 +519,7 @@ async fn reversed_range_is_swapped_in_lenient_mode() {
         dir.path(),
         &json!({"path": "r.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -559,7 +559,7 @@ async fn reversed_range_is_rejected_in_strict_mode() {
         dir.path(),
         &json!({"path": "r.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -597,7 +597,7 @@ async fn range_stale_shows_fresh_anchors_and_retry_succeeds() {
         dir.path(),
         &json!({"path": "s.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let lines: Vec<&str> = read_out.lines().collect();
@@ -659,7 +659,7 @@ async fn an_edit_error_is_never_an_empty_result() {
         dir.path(),
         &json!({"path": "e.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let anchor = read_out
@@ -714,7 +714,7 @@ async fn edit_with_unowned_anchor_is_a_typed_ownership_error() {
         dir.path(),
         &json!({"path": "a.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     );
     let out = text(edit(
@@ -755,7 +755,7 @@ async fn edit_unowned_anchor_case_hint_names_the_owned_variant() {
         dir.path(),
         &json!({"path": "a.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let owned = out
@@ -810,14 +810,14 @@ async fn edit_cross_file_anchors_are_a_bad_shape() {
         dir.path(),
         &json!({"path": "a.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let rb = text(read(
         dir.path(),
         &json!({"path": "b.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let from = ra
@@ -867,7 +867,7 @@ async fn edit_batch_demotes_unowned_members_and_applies_the_rest() {
         dir.path(),
         &json!({"path": "a.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let rows: Vec<&str> = out.lines().collect();
@@ -909,7 +909,7 @@ async fn edit_demotion_labels_use_the_original_batch_indices() {
         dir.path(),
         &json!({"path": "a.txt"}),
         None,
-        None,
+        DEFAULT_BUDGET,
         Some(&mut *reg),
     ));
     let rows: Vec<&str> = out.lines().collect();

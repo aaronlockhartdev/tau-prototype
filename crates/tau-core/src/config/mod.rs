@@ -480,6 +480,7 @@ pub fn load(system_dir: &Path, project_dir: &Path) -> Result<Config, LoadError> 
     config.om.validate()?;
     config.subagents.validate()?;
     config.validate_providers()?;
+    config.limits.image.validate()?;
     spelling::validate(&config)?;
     Ok(config)
 }
@@ -500,6 +501,7 @@ impl LoadError {
             | Self::OmThresholdZero { .. }
             | Self::MissingContextWindow { .. }
             | Self::ZeroMaxTokens { .. }
+            | Self::ImagePixelsZero
             | Self::FleetCapInversion { .. }
             | Self::ProviderNameHasSlash { .. }
             | Self::ModelKeyEmpty { .. }
@@ -550,6 +552,10 @@ pub enum LoadError {
     ZeroMaxTokens {
         key: String,
     },
+    /// A `[limits.image] max_pixels` of 0 (audit Add6-T6): the read floors its
+    /// downscale at one pixel per axis, so a budget of 0 flattens every image
+    /// the session reads. A load-time refusal, never a silent 1×1.
+    ImagePixelsZero,
     /// A provider name carrying `/` (#354): an id's prefix is where its
     /// provider's name ends, so a name with a slash leaves the prefix ambiguous.
     ProviderNameHasSlash {
@@ -622,6 +628,10 @@ impl fmt::Display for LoadError {
                     "{key} declares max_tokens = 0; the output cap must be positive"
                 )
             }
+            Self::ImagePixelsZero => write!(
+                f,
+                "limits.image.max_pixels = 0: a budget of 0 downscales every image to 1×1; use at least 1"
+            ),
             Self::FleetCapInversion { soft, hard } => {
                 write!(
                     f,
