@@ -103,3 +103,102 @@ async fn a_stop_preempts_the_drain_and_a_send_resumes_it() {
         .collect();
     assert_eq!(users, vec!["one", "two", "three", "go"]);
 }
+
+/// The #148 lifecycle pinned at the agent: a notified steering report mints
+/// its entry id at queue time and fires the wire upsert then (the GUI shows
+/// the report while the parent's turn is in flight), and the file line lands
+/// at dequeue under that same id — one id, two emissions, one entry. Delete
+/// the pre-mint and this goes red at the upsert: the card would appear only
+/// when the line is written, which is the id-order property #148 exists for.
+#[tokio::test]
+async fn a_notified_steer_mints_at_queue_time_and_lands_under_that_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![sse("answer", &[])]));
+    let agent = make_agent(dir.path(), provider);
+    // The entry tee (ADR-0008): the wire-only upsert and the committed
+    // append both ride it, so the test sees each emission's id.
+    let fired = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+    let f = Arc::clone(&fired);
+    agent.set_entry_event_hook(Some(Arc::new(move |entry: &Entry| {
+        f.lock().push(entry.id.clone());
+    })));
+    agent.send_notified_steer("the child reports", "child-1".to_owned());
+    // Queue time: the upsert fired, the file line did not.
+    assert_eq!(fired.lock().len(), 1, "the queue-time upsert did not fire");
+    let minted = fired.lock()[0].clone();
+    assert!(
+        entries_of(&agent.inner.lock().store).is_empty(),
+        "a queue-time file line lands ahead of the in-flight assistant (#148)"
+    );
+    agent.send("go", Lane::FollowUp);
+    agent.process().await.unwrap();
+    let entries = entries_of(&agent.inner.lock().store);
+    let report = entries
+        .iter()
+        .find(|e| e.payload["lane"] == serde_json::json!("steering"))
+        .expect("the steering report's entry is missing");
+    // The dequeue wrote the line under the id the mint reserved: the id the
+    // wire saw, and the file holds exactly one copy of it.
+    assert_eq!(report.id, minted, "the line did not land under the id");
+    assert_eq!(report.payload["source"], serde_json::json!("child-1"));
+    assert_eq!(
+        entries.iter().filter(|e| e.id == minted).count(),
+        1,
+        "the pre-mint issued a second entry"
+    );
+    // Wire emissions: the queue-time upsert and the committed append carry
+    // the one id, twice and no more (the follow-up's user entry and the
+    // turn's assistant entry ride the same tee with their own ids).
+    assert_eq!(
+        fired.lock().iter().filter(|id| **id == minted).count(),
+        2,
+        "the pre-mint's id reached the wire more than upsert + commit: {fired:?}"
+    );
+    assert_eq!(fired.lock()[0], minted, "the upsert is the first emission");
+}
+
+/// The mint-failure path of the same lifecycle: a store whose file cannot be
+/// read has no id to give the report, so the item is queued with none — no
+/// wire card, since an id the file may already hold is the collision 3B's
+/// mint refuses — and the drain surfaces the storage error instead of
+/// appending.
+#[tokio::test]
+async fn a_notified_steer_with_no_mintable_id_queues_without_a_wire_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![sse("answer", &[])]));
+    let agent = make_agent(dir.path(), provider);
+    let fired = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+    let f = Arc::clone(&fired);
+    agent.set_entry_event_hook(Some(Arc::new(move |entry: &Entry| {
+        f.lock().push(entry.id.clone());
+    })));
+    // The file grows past the mirror's length with a line that is not an
+    // entry: the mint's refresh re-reads it, and the read's failure is the
+    // mint's failure (3B: a mint is a Result).
+    {
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(agent.inner.lock().store.path())
+            .unwrap()
+            .write_all(b"not an entry line\n")
+            .unwrap();
+    }
+    agent.send_notified_steer("the child reports", "child-1".to_owned());
+    assert!(
+        fired.lock().is_empty(),
+        "an id the store cannot build fired a wire card: {fired:?}"
+    );
+    assert!(agent.has_pending(), "the report was dropped, not queued");
+    // The drain surfaces the storage error: never a silent success, never a
+    // mint at the file's first id (the 80 GB collision's shape).
+    let err = agent.process().await.unwrap_err();
+    assert!(
+        matches!(err, AgentError::Session(_)),
+        "the mint failure did not surface: {err}"
+    );
+    assert!(
+        fired.lock().is_empty(),
+        "a colliding entry reached the wire"
+    );
+}
