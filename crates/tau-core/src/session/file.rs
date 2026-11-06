@@ -148,18 +148,19 @@ impl SessionStore {
         // can grow the file out from under the in-memory id set: refresh
         // before the parent check, or a valid parent reads "unknown".
         self.refresh_if_grown()?;
-        // The id set, refreshed above, is the file's: an id is never written
-        // twice. Minting cannot close this — the counter is per-handle, so a
-        // second store over the same file mints an id the first store takes
-        // (the duplicate id the parent-chain walk loops on, the 80 GB shape).
-        if self.ids.contains(&entry.id) {
+        // The mirror's id set, refreshed above, is the file's: an id is never
+        // written twice. Minting cannot close this — the counter is per-handle,
+        // so a second store over the same file mints an id the first store
+        // takes (the duplicate id the parent-chain walk loops on, the 80 GB
+        // shape).
+        if self.file_holds(&entry.id) {
             return Err(Error::Other(format!(
                 "entry id {} already exists — the append was refused",
                 entry.id
             )));
         }
         if let Some(p) = parent
-            && !self.ids.contains(p)
+            && !self.file_holds(p)
         {
             return Err(Error::Other(format!("unknown parent {p}")));
         }
@@ -169,7 +170,7 @@ impl SessionStore {
 
         // The writer — never the reader — settles a tail left unterminated
         // by a kill mid-append, so no mangled line lands mid-file.
-        self.settle_tail()?;
+        let settle_delta = self.settle_tail()?;
 
         let mut file = OpenOptions::new()
             // create(false): a file deleted after open is a refusal (the
@@ -181,19 +182,10 @@ impl SessionStore {
         let line_len = line.len();
         line.push('\n');
         file.write_all(line.as_bytes())?;
-        // The writer's own growth: keep the bookkeeping `refresh_if_grown`
-        // relies on (a settle may also have touched the tail).
-        if let Ok(m) = fs::metadata(self.path()) {
-            self.file_len = m.len();
-        }
-
-        self.ids.insert(entry.id.clone());
-        self.entries.push(Some(entry.clone()));
-        self.entry_len.push(line_len);
-        // The id was reserved up front (mint_id): advance the counter past
-        // it, never double-advance.
-        self.next = self.next.max(entry.id.parse::<u64>().unwrap_or(0) + 1);
-        self.loaded = true;
+        // The line joins the mirror, and the mirror's length moves to what
+        // this write proves: the appender is the writer, so it needs no `stat`
+        // to know the file it just grew (H10).
+        self.record_append(&entry, line_len, settle_delta);
         Ok(entry)
     }
 
@@ -202,17 +194,20 @@ impl SessionStore {
     /// last line unterminated — a complete line missing its newline, or a
     /// torn partial. The next append settles it: the complete line is
     /// terminated, the torn one truncated, and the new line starts clean.
-    fn settle_tail(&self) -> Result<(), Error> {
+    ///
+    /// The return is the byte count the settlement changed the file by, which
+    /// the append adds to the length its mirror is proven at.
+    fn settle_tail(&self) -> Result<i64, Error> {
         let mut file = fs::File::open(self.path())?;
         let len = file.metadata()?.len();
         if len == 0 {
-            return Ok(());
+            return Ok(0);
         }
         file.seek(io::SeekFrom::End(-1))?;
         let mut last = [0u8; 1];
         file.read_exact(&mut last)?;
         if last[0] == b'\n' {
-            return Ok(());
+            return Ok(0);
         }
         let raw = fs::read_to_string(self.path())?;
         let idx = raw.rfind('\n').map_or(0, |i| i + 1);
@@ -225,6 +220,7 @@ impl SessionStore {
             // A complete line missing its newline: terminate it.
             let mut tail = OpenOptions::new().append(true).open(self.path())?;
             tail.write_all(b"\n")?;
+            Ok(1)
         } else {
             // A torn line: truncate it; the append below starts clean.
             fs::write(
@@ -232,8 +228,11 @@ impl SessionStore {
                 raw.get(..idx)
                     .expect("offset from rfind() is a char boundary"),
             )?;
+            Ok(
+                i64::try_from(idx).expect("file offset, well under i64::MAX")
+                    - i64::try_from(raw.len()).expect("file length, well under i64::MAX"),
+            )
         }
-        Ok(())
     }
 
     /// Move an oversized inline payload out to a zstd sidecar blob
@@ -353,7 +352,9 @@ impl SessionStore {
     /// via temp-file rename.
     pub fn set_leaf(&mut self, leaf_id: &str) -> Result<(), Error> {
         self.ensure_open()?;
-        if !self.ids.contains(leaf_id) {
+        // The mirror's id set, read by `ensure_open`, is the file's: a leaf
+        // the file never held stays unknown.
+        if !self.file_holds(leaf_id) {
             return Err(Error::Other(format!("unknown leaf {leaf_id}")));
         }
         self.update_header(|h| h.leaf = Some(leaf_id.to_owned()))?;
