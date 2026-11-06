@@ -91,6 +91,16 @@ async fn a_text_turn_streams_and_decodes_through_the_real_client() {
         "the [DONE]-terminated stream is complete"
     );
     assert_eq!(result.usage.unwrap().total_tokens(), 18);
+    // #224 fidelity: the mock stamps `response.created` and `response.completed`
+    // with the same second, as the real dialect does
+    // (research/tps-server-timestamps.md) — so the provider reads a zero window
+    // and reports no duration, and the GUI falls back to its wall-clock
+    // estimate. Before the frames carried stamps, this run exercised the
+    // omitted-timestamp shape, not the one real servers send.
+    assert_eq!(
+        result.duration, None,
+        "one created_at for the whole stream is a zero window, not a duration"
+    );
     // The text arrived as deltas (streaming fidelity), not one lump.
     let deltas = sink
         .0

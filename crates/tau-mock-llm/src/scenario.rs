@@ -247,9 +247,19 @@ pub fn plan_path(instructions: &Option<String>) -> Option<String> {
     Some(rest.get(..end)?.to_owned())
 }
 
-/// The `data:` payloads of one turn, in wire order: `response.created`,
-/// the text split into deltas, one complete `response.output_item.done`
-/// per function call, `response.completed` with usage, `[DONE]`.
+/// The clock the frames stamp, as `created_at` (epoch seconds). The mock never
+/// reads the wall clock, so a scripted run's frames are byte-identical. One
+/// value for the whole stream, as the real dialect does: `created_at` is the
+/// response object's creation instant, echoed on every frame that embeds it
+/// (research/tps-server-timestamps.md) — so the provider's decode-window math
+/// sees the same zero window a real server gives, not the omitted-timestamp
+/// shape.
+const MOCK_EPOCH: i64 = 1_700_000_000;
+
+/// The `data:` payloads of one turn, in wire order: `response.created`
+/// (stamped), the text split into deltas, one complete
+/// `response.output_item.done` per function call, `response.completed` with
+/// usage and the same stamp, `[DONE]`.
 /// `{{plan_path}}` in a call's arguments is replaced with `plan_path`
 /// when given.
 #[must_use]
@@ -263,7 +273,8 @@ pub fn render_frames(
     let mut frames = vec![
         json!({
             "type": "response.created",
-            "response": { "id": id }
+            "created_at": MOCK_EPOCH,
+            "response": { "id": id, "created_at": MOCK_EPOCH }
         })
         .to_string(),
     ];
@@ -299,7 +310,7 @@ pub fn render_frames(
     frames.push(
         json!({
             "type": "response.completed",
-            "response": { "id": id, "usage": {
+            "response": { "id": id, "created_at": MOCK_EPOCH, "usage": {
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
                 "total_tokens": usage.total_tokens,
@@ -387,6 +398,43 @@ mod tests {
             let joined: String = chunks.concat();
             assert_eq!(joined, text, "chunks must concatenate exactly");
         }
+    }
+
+    #[test]
+    fn every_frame_that_embeds_the_response_carries_one_created_at() {
+        // research/tps-server-timestamps.md: `created_at` is the response
+        // object's creation instant, echoed on every frame that embeds it. The
+        // provider reads it off `response.created` (top level) and
+        // `response.completed` (under `response`); a mock that stamps neither
+        // exercises the omitted-timestamp decode path, never the real one.
+        let frames = render_frames(
+            &Turn {
+                text: Some("hi".into()),
+                calls: vec![],
+            },
+            &Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+                total_tokens: 2,
+            },
+            3,
+            None,
+        );
+        let frame = |kind: &str| -> Value {
+            frames
+                .iter()
+                .map(|f| serde_json::from_str(f).expect("a frame is JSON"))
+                .find(|v: &Value| v["type"] == kind)
+                .unwrap_or_else(|| panic!("no {kind} frame in the script"))
+        };
+        assert_eq!(
+            frame("response.created")["created_at"].as_i64(),
+            Some(MOCK_EPOCH)
+        );
+        assert_eq!(
+            frame("response.completed")["response"]["created_at"].as_i64(),
+            Some(MOCK_EPOCH)
+        );
     }
 
     #[test]
