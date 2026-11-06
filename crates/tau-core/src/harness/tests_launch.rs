@@ -11,6 +11,7 @@ use crate::subagent::testkit::{CannedFactory, TestBridge, TestDriver};
 use crate::subagent::{Supervisor, SupervisorParams};
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 
 fn canned_provider() -> crate::provider::TurnProviderRef {
@@ -41,6 +42,7 @@ async fn launch_root_builds_the_supervisor_and_wires_the_events() {
             provider: canned_provider(),
             base_prompt: None,
             route: route(&config, "model"),
+            stop: Arc::new(AtomicBool::new(false)),
         },
     )
     .unwrap();
@@ -156,6 +158,7 @@ async fn launch_root_session_is_freed_when_dropped() {
             provider: canned_provider(),
             base_prompt: None,
             route: route(&config, "model"),
+            stop: Arc::new(AtomicBool::new(false)),
         },
     )
     .unwrap();
@@ -270,6 +273,7 @@ max_retries = 1
             provider,
             base_prompt: None,
             route: route(&config, "model"),
+            stop: Arc::new(AtomicBool::new(false)),
         },
     )
     .unwrap();
@@ -288,6 +292,7 @@ max_retries = 1
             provider: canned_provider(),
             base_prompt: None,
             route: route(&config, "model"),
+            stop: Arc::new(AtomicBool::new(false)),
         },
     )
     .unwrap();
@@ -434,6 +439,7 @@ async fn root_session_system_md_replaces_the_default_and_append_composes() {
             provider: canned_provider(),
             base_prompt: None,
             route: route(&config, "model"),
+            stop: Arc::new(AtomicBool::new(false)),
         },
     )
     .unwrap();
@@ -476,6 +482,7 @@ async fn root_session_headless_frame_is_not_clobbered_by_system_md() {
             provider: canned_provider(),
             base_prompt: Some(FRAME.to_owned()),
             route: route(&config, "model"),
+            stop: Arc::new(AtomicBool::new(false)),
         },
     )
     .unwrap();

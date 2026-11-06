@@ -191,6 +191,25 @@ async fn a_childs_forwarding_seam_stops_on_its_agents_flag() {
     drop(core);
 }
 
+/// 2C root half: the same identity on a root session. `sessions.rs` minted the
+/// provider's flag and `launch.rs` minted the agent's, so the stop command had
+/// to write both; a seam watching the flag the command does not write never
+/// has its stream cut.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_root_sessions_forwarding_seam_stops_on_its_agents_flag() {
+    let base = silent_endpoint(late_body(), 1).await;
+    let (core, parent, _tmp) = core_over(&base);
+    let live = core
+        .live(&parent)
+        .expect("the root registers as a live session");
+    assert!(
+        Arc::ptr_eq(&live.provider.stop, &live.agent.stop_flag()),
+        "the root's provider stop flag is not its agent's: the stop command cuts \
+         the stream on one flag and marks the entry interrupted on the other"
+    );
+    drop(core);
+}
+
 /// 2B: a stop inside the prefill window tears the child's request down —
 /// `ForwardSink::stop_signal` is the seam's half of that, and it polls the
 /// seam's flag. On a seam watching a flag nobody writes, the poll never ends:
