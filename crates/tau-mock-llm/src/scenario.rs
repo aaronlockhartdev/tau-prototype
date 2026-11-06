@@ -230,9 +230,6 @@ fn write_captured(dir: &Path, req: &WireRequest) -> std::io::Result<()> {
     writeln!(f, "{line}")
 }
 
-/// The `data:` payloads of one turn, in wire order: `response.created`,
-/// the text split into deltas, one complete `response.output_item.done`
-/// per function call, `response.completed` with usage, `[DONE]`.
 /// The system-prompt plan-file section's marker (the e2e workbench child
 /// templates its `write` call against `{{plan_path}}`): kept in sync with
 /// `tau_core::plan::PLAN_SECTION_ANCHOR` — the mock crate stays free of a
