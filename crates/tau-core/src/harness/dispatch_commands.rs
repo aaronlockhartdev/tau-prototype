@@ -99,12 +99,11 @@ impl Core {
                         .map_err(|e| ProtocolError::Other { message: e })?;
                     return Ok(CommandOutput::None);
                 }
+                // One flag, minted where the provider is built: this write
+                // both cuts the stream (the forwarding seam reads it) and
+                // marks the entry interrupted (append_assistant reads it).
+                // The pair this replaces is #2C's root half.
                 live.stop.store(true, Ordering::SeqCst);
-                // The agent's own stop flag is what append_assistant reads to
-                // mark the entry interrupted; the LiveSession flag above only
-                // cuts the stream. Both must be set, or a user stop renders as
-                // a normal completion.
-                live.agent.stop_flag().store(true, Ordering::SeqCst);
                 Ok(CommandOutput::None)
             }
             Command::QueueItemRemove { session, item } => {

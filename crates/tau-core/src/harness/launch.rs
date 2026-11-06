@@ -40,6 +40,11 @@ pub enum SessionRole {
         /// never the provider the config's map sorts first. Resolved once for
         /// the live shell (ticket #43's one-resolution rule).
         route: Route,
+        /// The root's one stop flag, minted by the site that builds the
+        /// provider it pairs with: the seam that cuts the stream and the loop
+        /// that marks the entry interrupted read one flag (#2C root half —
+        /// the child's spawn has minted one since #2B).
+        stop: Arc<AtomicBool>,
     },
     /// A session around a caller-built supervisor, for tests that drive a
     /// parent without a core. It skips what a real open does: model resolution,
@@ -213,6 +218,7 @@ impl AgentSession {
                 provider,
                 base_prompt,
                 route,
+                stop,
             } => root_session(
                 &core,
                 &workspace,
@@ -221,6 +227,7 @@ impl AgentSession {
                 store,
                 provider,
                 base_prompt.as_deref(),
+                stop,
             ),
             SessionRole::Seam {
                 supervisor,
@@ -324,6 +331,7 @@ fn root_session(
     mut store: SessionStore,
     provider: TurnProviderRef,
     base_prompt: Option<&str>,
+    stop: Arc<AtomicBool>,
 ) -> Result<Arc<AgentSession>, ProtocolError> {
     // The open walks the session file twice. `build_live` projected it once to
     // route the model (#336); this projection answers the two questions only
@@ -467,7 +475,7 @@ fn root_session(
     let sid = store.id().to_owned();
     let agent = Arc::new(AgentSession::new(SessionParams {
         store,
-        stop: Arc::new(AtomicBool::new(false)),
+        stop,
         system_prompt,
         model: model.to_owned(),
         tools: tools::surface::root_specs(),

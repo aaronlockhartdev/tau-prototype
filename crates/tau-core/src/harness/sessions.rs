@@ -254,13 +254,19 @@ impl Core {
             .root_provider
             .clone()
             .unwrap_or_else(|| session_inner(&self.client, &route.provider, &config.requests));
+        // The root's one stop flag: minted here and handed to the provider
+        // (the seam that cuts the stream) and, through the role, to the agent
+        // (the loop that marks the entry interrupted), so a user stop is one
+        // write and both cut points see it (#2C root half; #2B proved the
+        // shape on the child path).
+        let stop = Arc::new(AtomicBool::new(false));
         let provider = Arc::new(ForwardingProvider::new(
             inner,
             self.events_tx.clone(),
             self.pipe.clone(),
             workspace.id.clone(),
             store.id().to_owned(),
-            Arc::new(AtomicBool::new(false)),
+            stop.clone(),
         ));
         let agent = AgentSession::launch(
             store,
@@ -271,6 +277,7 @@ impl Core {
                 provider: provider.clone(),
                 base_prompt,
                 route,
+                stop,
             },
         )?;
         let meta = SessionMeta {
