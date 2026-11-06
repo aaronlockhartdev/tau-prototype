@@ -25,7 +25,7 @@ function dirtied(): StoreBag {
     follow: 'h1',
     modelMenuOpen: true,
     reasoningOpen: !d.reasoningOpen,
-    entryOpen: new Map([['s1:e1:tool', true]]),
+    entryOpen: { 's1:e1:tool': true },
     workspaces: [{ id: 'w9', name: 'other', cwd: '/tmp/other' }],
     current: 's1',
     tailJump: 7,
@@ -60,21 +60,21 @@ describe('freshStore', () => {
   });
 
   it('hands out fresh collections, so a mutation cannot outlive the reset', () => {
-    // The equality check above passes with a shared Map too: the leak is the
+    // The equality check above passes with a shared record too: the leak is the
     // object identity, which a suite writing into it carries to the next.
     freshStore();
     const files = store.files;
     const entryOpen = store.entryOpen;
     const pane = store.pane;
     files['w1'] = { '.': [] };
-    entryOpen.set('s1:e1:tool', true);
+    entryOpen['s1:e1:tool'] = true;
     pane['w1'] = { ...defaultPane(), center: 'files' };
     freshStore();
     expect(store.files).not.toBe(files);
     expect(store.entryOpen).not.toBe(entryOpen);
     expect(store.pane).not.toBe(pane);
     expect(store.files).toEqual({});
-    expect(store.entryOpen.size).toBe(0);
+    expect(Object.keys(store.entryOpen)).toEqual([]);
     expect(store.pane).toEqual({});
   });
 

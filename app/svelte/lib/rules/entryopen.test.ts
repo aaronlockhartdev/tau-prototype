@@ -17,28 +17,28 @@ describe('entryopen keys', () => {
 
 describe('pruneSession', () => {
   it('drops every row a dropped session owns', () => {
-    const open = new Map([
-      ['s1:e0:tool', true],
-      ['s1:e1:think', false],
-      ['s2:e0:tool', true]
-    ]);
+    const open: Record<string, boolean> = {
+      's1:e0:tool': true,
+      's1:e1:think': false,
+      's2:e0:tool': true
+    };
     pruneSession(open, 's1');
-    expect([...open.keys()]).toEqual(['s2:e0:tool']);
+    expect(Object.keys(open)).toEqual(['s2:e0:tool']);
   });
 
   it('leaves a session whose id merely starts with the dropped one', () => {
     // The prefix ends at the colon: `s10`'s rows are not `s1`'s.
-    const open = new Map([
-      ['s1:e0:tool', true],
-      ['s10:e0:tool', true]
-    ]);
+    const open: Record<string, boolean> = {
+      's1:e0:tool': true,
+      's10:e0:tool': true
+    };
     pruneSession(open, 's1');
-    expect([...open.keys()]).toEqual(['s10:e0:tool']);
+    expect(Object.keys(open)).toEqual(['s10:e0:tool']);
   });
 
-  it('a session with no rows leaves the map untouched', () => {
-    const open = new Map([['s2:e0:tool', true]]);
+  it('a session with no rows leaves the record untouched', () => {
+    const open: Record<string, boolean> = { 's2:e0:tool': true };
     pruneSession(open, 's1');
-    expect(open).toEqual(new Map([['s2:e0:tool', true]]));
+    expect(open).toEqual({ 's2:e0:tool': true });
   });
 });
