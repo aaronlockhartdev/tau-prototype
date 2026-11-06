@@ -272,7 +272,7 @@ pub(crate) struct ForwardingChildFactory {
     pub(crate) providers: Mutex<HashMap<String, Arc<ForwardingProvider>>>,
 }
 impl ChildProviderFactory for ForwardingChildFactory {
-    fn create(&self, child: &str, model: &str) -> TurnProviderRef {
+    fn create(&self, child: &str, model: &str, stop: &Arc<AtomicBool>) -> TurnProviderRef {
         // #336: a child is addressed at the provider its model's id names (a
         // `.md` agent type's model, or the parent's), not at the provider the
         // parent happened to open on. A prefix naming no provider is no route
@@ -291,7 +291,7 @@ impl ChildProviderFactory for ForwardingChildFactory {
             self.pipe.clone(),
             self.workspace.clone(),
             child.to_owned(),
-            Arc::new(AtomicBool::new(false)),
+            stop.clone(),
         ));
         // Stash it so the bridge's spawned reuses this exact provider for the
         // child's LiveSession (one per child, as the root has).

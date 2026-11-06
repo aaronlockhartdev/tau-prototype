@@ -5,6 +5,7 @@ use crate::harness::SessionRole;
 use crate::provider::{self, ResponseRequest, StreamOutcome, TurnSink};
 use crate::session::SessionStore;
 use serde_json::json;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -59,7 +60,7 @@ pub(crate) struct CannedFactory {
 }
 
 impl ChildProviderFactory for CannedFactory {
-    fn create(&self, _id: &str, model: &str) -> TurnProviderRef {
+    fn create(&self, _id: &str, model: &str, _stop: &Arc<AtomicBool>) -> TurnProviderRef {
         self.routed.lock().push(model.to_string());
         let slot = self.created.fetch_add(1, Ordering::SeqCst);
         let scripts = self

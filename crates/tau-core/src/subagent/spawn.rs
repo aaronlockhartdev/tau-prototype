@@ -157,7 +157,11 @@ impl Supervisor {
         // provider's model is addressed there, not at its parent's endpoint.
         let inherited = self.inherited();
         let child_model = ty.model.clone().unwrap_or(inherited.model);
-        let provider = self.provider.create(&session_id, &child_model);
+        // The child's one stop flag, minted here: the spawn's provider and
+        // the child's agent get the same `Arc`, so the seam's cut is the
+        // loop's cut (#2B/#2C).
+        let stop = Arc::new(AtomicBool::new(false));
+        let provider = self.provider.create(&session_id, &child_model, &stop);
         let child_tools = tools::surface::child_specs(ty.tools.as_deref());
         // The role carries the child's wiring (R2); the spawn keeps the
         // context-mode and agent-type resolution.
@@ -172,6 +176,7 @@ impl Supervisor {
                 record,
                 handle: handle.clone(),
                 turn: inherited.turn,
+                stop,
             },
         )
         // The child role has no fallible step (the provider, the record,

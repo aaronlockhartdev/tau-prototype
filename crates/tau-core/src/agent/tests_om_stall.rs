@@ -41,6 +41,7 @@ fn om_agent(
 ) -> AgentSession {
     AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),

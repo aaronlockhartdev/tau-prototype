@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicUsize;
 
 use super::*;
 use serde_json::json;
+use std::sync::atomic::AtomicBool;
 
 pub(crate) fn providers() -> BTreeMap<String, crate::config::Provider> {
     let mut m = BTreeMap::new();
@@ -215,7 +216,7 @@ pub(crate) struct CannedChildFactory {
     pub(crate) body: String,
 }
 impl ChildProviderFactory for CannedChildFactory {
-    fn create(&self, _child: &str, _model: &str) -> TurnProviderRef {
+    fn create(&self, _child: &str, _model: &str, _stop: &Arc<AtomicBool>) -> TurnProviderRef {
         Arc::new(CannedChild {
             body: self.body.clone(),
             index: AtomicUsize::new(0),
@@ -258,7 +259,7 @@ pub(crate) struct SlowChildFactory {
     pub(crate) delay_ms: u64,
 }
 impl ChildProviderFactory for SlowChildFactory {
-    fn create(&self, _child: &str, _model: &str) -> TurnProviderRef {
+    fn create(&self, _child: &str, _model: &str, _stop: &Arc<AtomicBool>) -> TurnProviderRef {
         Arc::new(SlowChild {
             body: self.body.clone(),
             delay_ms: self.delay_ms,

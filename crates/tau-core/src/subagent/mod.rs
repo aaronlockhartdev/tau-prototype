@@ -419,6 +419,8 @@ mod tests_reclaim;
 #[cfg(test)]
 mod tests_spawn_handles;
 #[cfg(test)]
+mod tests_stop_flag;
+#[cfg(test)]
 mod tests_stop_resume;
 #[cfg(test)]
 mod tests_wake;

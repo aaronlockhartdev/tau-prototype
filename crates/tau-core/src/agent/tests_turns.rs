@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::AtomicBool;
 
 use crate::agent::testkit::*;
 use crate::provider::canned_cut;
@@ -377,6 +378,7 @@ async fn kill_policy_completes_the_inflight_tool_batch() {
     ]));
     let agent = AgentSession::new(SessionParams {
         store: session_in(dir.path()),
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),

@@ -145,19 +145,23 @@ impl Supervisor {
         store.open().ok()?;
         let record = OmState::load_record(&mut store).unwrap_or_default();
         let inherited = self.inherited();
+        // The cold child gets its own flag, shared with its provider
+        // exactly as a spawn's is.
+        let stop = Arc::new(AtomicBool::new(false));
         let agent = AgentSession::launch(
             store,
             SessionRole::Child {
                 supervisor: sup,
                 // The re-adopted child is addressed at the provider its model
                 // id names, the same route a spawn takes (#336).
-                provider: self.provider.create(&d.child, &inherited.model),
+                provider: self.provider.create(&d.child, &inherited.model, &stop),
                 system_prompt: self.system_prompt.clone(),
                 model: inherited.model.clone(),
                 tools: tools::surface::child_specs(None),
                 record,
                 handle: d.handle.clone(),
                 turn: inherited.turn,
+                stop,
             },
         )
         .ok()?;

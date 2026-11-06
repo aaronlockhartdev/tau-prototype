@@ -150,6 +150,7 @@ async fn a_md_type_configures_the_child_prompt_model_and_tools() {
     store.create().unwrap();
     let parent = Arc::new(AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -234,6 +235,7 @@ async fn a_general_child_inherits_the_catalog_carrying_prompt() {
     store.create().unwrap();
     let parent = Arc::new(AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: prompt.clone(),
         model: "test-model".into(),
         tools: tools::tool_specs(),
@@ -397,6 +399,7 @@ async fn a_stop_resume_in_the_drive_window_does_not_double_drive() {
     store.create().unwrap();
     let parent = Arc::new(AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "test-model".into(),
         tools: tools::tool_specs(),

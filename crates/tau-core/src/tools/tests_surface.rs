@@ -14,6 +14,7 @@ use crate::session::SessionStore;
 use crate::subagent::testkit::{CannedFactory, TestBridge, TestDriver};
 use crate::subagent::{ChildLink, Supervisor, SupervisorParams};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 
 fn canned_provider() -> crate::provider::TurnProviderRef {
@@ -117,6 +118,7 @@ fn parent_child(dir: &std::path::Path) -> (Arc<AgentSession>, Arc<Supervisor>, A
             record: OmRecord::default(),
             handle: "parent-1".into(),
             turn: TurnConfig::default(),
+            stop: Arc::new(AtomicBool::new(false)),
         },
     )
     .unwrap();
@@ -163,6 +165,7 @@ fn the_role_specs_table_is_exact() {
         record: OmRecord::default(),
         handle: "parent-1".into(),
         turn: TurnConfig::default(),
+        stop: Arc::new(AtomicBool::new(false)),
     };
     let child_names = names(surface::specs_for(&child, None));
     assert_eq!(

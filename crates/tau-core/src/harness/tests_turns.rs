@@ -268,6 +268,7 @@ async fn a_live_om_run_emits_om_status_events() {
     ));
     let agent = Arc::new(AgentSession::new(SessionParams {
         store,
+        stop: Arc::new(AtomicBool::new(false)),
         system_prompt: "be terse".into(),
         model: "model".into(),
         tools: tools::agent_tool_specs(),
