@@ -217,8 +217,12 @@ impl Supervisor {
             agent_type: agent_type.to_owned(),
             context_mode,
             model: child_model.clone(),
+            title: name.clone(),
+            cwd: self.cwd.clone(),
+            created,
+            agent: agent.clone(),
+            provider: provider.clone(),
         });
-
         // The brief is the child's first turn (the handoff-in, ADR-0001).
         child.agent.send(brief, Lane::FollowUp);
         let drive_gen = child.drive_gen.fetch_add(1, Ordering::SeqCst) + 1;

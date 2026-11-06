@@ -6,24 +6,62 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use super::{
-    Arc, FunctionCall, Future, Pin, Provider, ProviderError, Requests, ResponseRequest,
+    Arc, AtomicBool, FunctionCall, Future, Pin, Provider, ProviderError, Requests, ResponseRequest,
     StreamOutcome, TurnEvent, TurnResult, TurnSink, decode_stream, fold_event, stream_turn,
 };
-
 /// The loop's provider seam (spec §6): a turn is a request in, a result out,
 /// with every stream delta forwarded to the sink on the way — the live path
 /// and the canned test path share this contract (ticket #19).
 pub type ProviderTurn<'a> =
     Pin<Box<dyn Future<Output = Result<TurnResult, ProviderError>> + Send + 'a>>;
 
+/// What a session's provider records about the streams it started: the call
+/// ids in order, which of them saw their `Completed` frame, and the one stop
+/// flag that cuts them.
+///
+/// The post-turn reconciliation diffs a turn's assistant entries against the
+/// ids (the kth entry is the kth call) and reads the completion note as the
+/// cut-vs-clean signal for an entry-less call (issue #82, N10).
+///
+/// It is reached through `TurnProvider::call_log` because a live session holds
+/// its provider as a trait object, and that provider is the same object its
+/// agent calls through (#175): the reconciliation reads the calls the agent
+/// made from the provider that made them, whatever kind of provider that is.
+/// A provider with no stream of its own (the canned scripts) answers with a
+/// fresh log, so a session running against one has no calls to reconcile.
+#[derive(Clone, Default)]
+pub struct CallLog {
+    /// Call ids in start order; a turn diffs its assistant entries against
+    /// this (the kth entry in a turn is the kth call).
+    pub calls: Arc<parking_lot::Mutex<Vec<String>>>,
+    /// Calls whose `Completed` frame was seen: the post-turn diff uses this
+    /// to tell a cut empty partial (interrupted end) from a completed empty
+    /// call (clean end).
+    pub completed: Arc<parking_lot::Mutex<std::collections::HashMap<String, bool>>>,
+    /// The session's stop flag, the one the spawn mints and hands to the
+    /// agent too (#2B): the sink cuts the stream on it, so the flag the user's
+    /// stop writes is the flag the transport reads.
+    pub stop: Arc<AtomicBool>,
+}
+
 pub trait TurnProvider: Send + Sync {
     fn call<'a>(&self, request: &ResponseRequest, sink: &'a mut dyn TurnSink) -> ProviderTurn<'a>;
+    /// This provider's stream record, shared: the `Arc`s the forwarding seam's
+    /// sink writes, and the live session's post-turn reconciliation reads.
+    fn call_log(&self) -> CallLog {
+        CallLog::default()
+    }
     /// The provider a forwarding seam wraps, if any: non-user-facing calls
     /// (the OM round-trips) route through it, keeping them out of the
     /// forwarding call registry (ticket #86). Plain providers return `None`.
     fn forwarding_inner(&self) -> Option<TurnProviderRef> {
         None
     }
+    /// Point this provider's calls at `inner` — the endpoint the model its id
+    /// names is addressed at (the `session_set_model` command's live half).
+    /// A provider with no route of its own (the canned scripts, an endpoint
+    /// built per model) has nothing to rebind.
+    fn set_route(&self, _inner: TurnProviderRef) {}
     /// The `[requests]` policy, moved on a live session's config reload
     /// (#347): the next provider call runs under the new timeout and retry
     /// numbers. A provider with no transport of its own (the canned scripts)

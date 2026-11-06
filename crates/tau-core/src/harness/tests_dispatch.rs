@@ -315,7 +315,7 @@ async fn a_production_send_makes_exactly_one_provider_call() {
         }
         let expected = n + 1;
         assert_eq!(
-            live.provider.calls.lock().len(),
+            live.provider.call_log().calls.lock().len(),
             expected,
             "send {expected} made a second provider call"
         );

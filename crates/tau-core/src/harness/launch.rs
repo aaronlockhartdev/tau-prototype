@@ -6,10 +6,10 @@
 
 use super::{
     AgentSession, Arc, AtomicBool, ChildProviderFactory, Config, Core, Event,
-    ForwardingChildFactory, HashMap, Mutex, OmStatusKind, Ordering, Path, PathBuf, ProtocolError,
-    SessionParams, SessionStore, SessionSubagentBridge, SubagentBridge, Supervisor,
-    SupervisorParams, TurnChildDriver, TurnConfig, Value, ViewEntry, Workspace, context,
-    derive_turn, entry_to_view, session_open, tools,
+    ForwardingChildFactory, OmStatusKind, Ordering, Path, PathBuf, ProtocolError, SessionParams,
+    SessionStore, SessionSubagentBridge, SubagentBridge, Supervisor, SupervisorParams,
+    TurnChildDriver, TurnConfig, Value, ViewEntry, Workspace, context, derive_turn, entry_to_view,
+    session_open, tools,
 };
 use crate::agent::{OmRoute, StreamDelta};
 use crate::config::{ProviderRef, Route, ToolBatchPolicy};
@@ -323,6 +323,7 @@ fn plan_wiring(
 /// pre-resolved: `build_live` routes once for the live shell (#336, on ticket
 /// #43's one-resolution rule).
 #[allow(clippy::too_many_lines)] // one root-assembly path; splitting is refactoring
+#[allow(clippy::too_many_arguments)] // the root's parts, threaded once; `stop` is the seam's half
 fn root_session(
     core: &Arc<Core>,
     workspace: &Workspace,
@@ -408,15 +409,10 @@ fn root_session(
     // The bridge and the supervisor reference each other: build the
     // bridge with an empty weak and patch it in after construction.
     // The child factory: a custom (test) one, or the default forwarding one.
-    // The default is kept concrete so the bridge can share its per-child
-    // provider with the child's agent (one provider, as the root has — #175).
-    let (bridge_factory, factory): (
-        Option<Arc<ForwardingChildFactory>>,
-        Arc<dyn ChildProviderFactory>,
-    ) = if let Some(custom) = core.child_factory.clone() {
-        (None, custom)
+    let factory: Arc<dyn ChildProviderFactory> = if let Some(custom) = core.child_factory.clone() {
+        custom
     } else {
-        let forwarding = Arc::new(ForwardingChildFactory {
+        Arc::new(ForwardingChildFactory {
             client: core.client.clone(),
             config: config.clone(),
             provider: route.provider.clone(),
@@ -425,18 +421,11 @@ fn root_session(
             tx: core.events_tx.clone(),
             pipe: core.pipe.clone(),
             workspace: workspace.id.clone(),
-            providers: Mutex::new(HashMap::new()),
-        });
-        (Some(Arc::clone(&forwarding)), forwarding)
+        })
     };
     let bridge = Arc::new(SessionSubagentBridge {
         core: Arc::clone(core),
         workspace: workspace.id.clone(),
-        client: core.client.clone(),
-        provider: route.provider.clone(),
-        requests: config.requests.clone(),
-        sup: Mutex::new(None),
-        factory: bridge_factory,
     });
     let subagent_bridge: Arc<dyn SubagentBridge> = bridge.clone();
     let sup = Supervisor::new(SupervisorParams {
@@ -471,7 +460,6 @@ fn root_session(
                 .collect(),
         ),
     });
-    bridge.sup.lock().replace(Arc::downgrade(&sup));
     let sid = store.id().to_owned();
     let agent = Arc::new(AgentSession::new(SessionParams {
         store,

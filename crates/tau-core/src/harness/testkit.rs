@@ -56,13 +56,15 @@ pub(crate) fn manual_session_om(
     let mut store = SessionStore::for_workspace(&cwd, &SessionStore::new_session_id());
     store.create().unwrap();
     let created = store.created();
+    let sid = store.id().to_owned();
+    let stop = Arc::new(AtomicBool::new(false));
     let provider = Arc::new(ForwardingProvider::new(
         inner,
         core.events_tx.clone(),
         core.pipe.clone(),
         workspace.id.clone(),
-        store.id().to_owned(),
-        Arc::new(AtomicBool::new(false)),
+        sid.clone(),
+        stop.clone(),
     ));
     let agent = AgentSession::launch(
         store,
@@ -86,7 +88,7 @@ pub(crate) fn manual_session_om(
     {
         let tx = core.events_tx.clone();
         let ws = workspace.id.clone();
-        let sid = provider.session.clone();
+        let sid_hook = sid.clone();
         let up_tx = tx.clone();
         let up_ws = ws.clone();
         let up_sid = sid.clone();
@@ -96,7 +98,7 @@ pub(crate) fn manual_session_om(
         agent.set_entry_event_hook(Some(Arc::new(move |entry: &crate::session::Entry| {
             let _ = tx.try_send(Event::EntryUpsert {
                 workspace: ws.clone(),
-                session: sid.clone(),
+                session: sid_hook.clone(),
                 entry: super::sessions::entry_to_view(entry),
             });
         })));
@@ -120,7 +122,7 @@ pub(crate) fn manual_session_om(
     }
     let live = Arc::new(LiveSession {
         meta: Mutex::new(SessionMeta {
-            id: provider.session.clone(),
+            id: sid,
             workspace: workspace.id.clone(),
             title: None,
             parent: None,
@@ -131,7 +133,7 @@ pub(crate) fn manual_session_om(
             archived: false,
         }),
         agent: agent.clone(),
-        stop: provider.stop.clone(),
+        stop,
         turn: AtomicBool::new(false),
         provider,
         cwd,

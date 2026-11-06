@@ -184,7 +184,7 @@ async fn a_childs_forwarding_seam_stops_on_its_agents_flag() {
         .live(&child)
         .expect("the child registers as a live session");
     assert!(
-        Arc::ptr_eq(&live.provider.stop, &live.agent.stop_flag()),
+        Arc::ptr_eq(&live.provider.call_log().stop, &live.agent.stop_flag(),),
         "the child's provider stop flag is not its agent's: the flag the stop \
          writes is invisible to the seam that cuts the stream"
     );
@@ -203,7 +203,7 @@ async fn a_root_sessions_forwarding_seam_stops_on_its_agents_flag() {
         .live(&parent)
         .expect("the root registers as a live session");
     assert!(
-        Arc::ptr_eq(&live.provider.stop, &live.agent.stop_flag()),
+        Arc::ptr_eq(&live.provider.call_log().stop, &live.agent.stop_flag()),
         "the root's provider stop flag is not its agent's: the stop command cuts \
          the stream on one flag and marks the entry interrupted on the other"
     );

@@ -18,6 +18,11 @@ use tau_protocol::payload::ResumeContract;
 /// this provider and to the child's agent, so the seam's stream cut, its
 /// prefill `stop_signal`, and the loop's interrupted entry all read one flag
 /// (#2B/#2C).
+///
+/// Stateless: every fact the child needs crosses the spawn notice
+/// (`SpawnNotice`), so a factory holds no per-child state between `create`
+/// and the bridge's registration — the provider it returns is the one the
+/// child's live session is registered with (#175).
 pub trait ChildProviderFactory: Send + Sync {
     fn create(
         &self,
@@ -41,17 +46,51 @@ pub struct StateNotice {
     pub resume_contract: Option<ResumeContract>,
 }
 
-/// A spawn notice (the protocol's `subagent_spawned` event).
-#[derive(Clone, Debug, PartialEq)]
+/// A spawn notice (the protocol's `subagent_spawned` event). It carries every
+/// fact the spawn has in hand at the moment it mints the notice — the child's
+/// agent, the provider the factory built with the child's stop flag, its
+/// title, cwd and created stamp — so the bridge registers what it is handed
+/// and resolves nothing back from a registry, a store re-open, or the handle.
+#[derive(Clone)]
 pub struct SpawnNotice {
     pub parent: String,
     pub handle: String,
     pub child: String,
     pub agent_type: String,
     pub context_mode: ContextMode,
-    /// The child's model (the dispatch registers the child's live session
-    /// with it).
+    /// The child's model (the bridge registers the child's live session with it).
     pub model: String,
+    /// The child's session title, minted by the spawn (the adjective-noun pair
+    /// it wrote into the header): the GUI's stub row gets the real name.
+    pub title: String,
+    /// The child's cwd — its parent's, the spawn's own.
+    pub cwd: std::path::PathBuf,
+    /// The child session's created stamp (epoch ms).
+    pub created: u64,
+    /// The child's agent, built by the spawn.
+    pub agent: Arc<AgentSession>,
+    /// The provider the spawn built with the agent's stop flag: the same
+    /// object the child's agent calls through (#175), registered as the live
+    /// session's provider.
+    pub provider: TurnProviderRef,
+}
+
+// identity-only debug: `agent` and `provider` are not Debug
+#[allow(clippy::missing_fields_in_debug)]
+impl std::fmt::Debug for SpawnNotice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpawnNotice")
+            .field("parent", &self.parent)
+            .field("handle", &self.handle)
+            .field("child", &self.child)
+            .field("agent_type", &self.agent_type)
+            .field("context_mode", &self.context_mode)
+            .field("model", &self.model)
+            .field("title", &self.title)
+            .field("cwd", &self.cwd)
+            .field("created", &self.created)
+            .finish()
+    }
 }
 
 /// A child handle was reclaimed (spawn-triggered terminal reclamation,

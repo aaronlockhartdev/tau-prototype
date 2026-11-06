@@ -254,6 +254,7 @@ impl Core {
             .root_provider
             .clone()
             .unwrap_or_else(|| session_inner(&self.client, &route.provider, &config.requests));
+        let session_id = store.id().to_owned();
         // The root's one stop flag: minted here and handed to the provider
         // (the seam that cuts the stream) and, through the role, to the agent
         // (the loop that marks the entry interrupted), so a user stop is one
@@ -265,7 +266,7 @@ impl Core {
             self.events_tx.clone(),
             self.pipe.clone(),
             workspace.id.clone(),
-            store.id().to_owned(),
+            session_id.clone(),
             stop.clone(),
         ));
         let agent = AgentSession::launch(
@@ -277,11 +278,11 @@ impl Core {
                 provider: provider.clone(),
                 base_prompt,
                 route,
-                stop,
+                stop: stop.clone(),
             },
         )?;
         let meta = SessionMeta {
-            id: provider.session.clone(),
+            id: session_id.clone(),
             workspace: workspace.id.clone(),
             title,
             parent,
@@ -294,7 +295,7 @@ impl Core {
         let live = Arc::new(LiveSession {
             meta: Mutex::new(meta.clone()),
             agent,
-            stop: provider.stop.clone(),
+            stop,
             turn: AtomicBool::new(false),
             provider,
             cwd: PathBuf::from(&workspace.cwd),
