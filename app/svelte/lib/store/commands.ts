@@ -7,6 +7,7 @@ import { command, type Command, type CommandOutput, type SessionMeta } from '../
 import { applySessionList, openSession, setArchived } from '../rules/sessions';
 import { errText, BusyError } from '../wire/errors';
 import { pane, store } from './state.svelte';
+import { pruneSession } from '../rules/entryopen';
 import { reconcileActiveFile } from './viewer.svelte';
 
 // Session-command convergence (F5): the clear-banner → invoke → on-failure
@@ -127,7 +128,13 @@ export async function deleteSession(ws: string, sid: string): Promise<void> {
     const alive = new Set(list.map((s) => s.id));
     const next = { ...store.sessions };
     for (const id of Object.keys(next)) {
-      if (next[id]!.meta.workspace === ws && !alive.has(id)) delete next[id];
+      if (next[id]!.meta.workspace === ws && !alive.has(id)) {
+        delete next[id];
+        // A row's card-expansion flags are dead with the row (spec §6): the
+        // map is keyed per session, and nothing else reaches these keys — the
+        // transcript is unmounted while the center shows the file viewer.
+        pruneSession(store.entryOpen, id);
+      }
     }
     store.sessions = applySessionList(next, list);
   });

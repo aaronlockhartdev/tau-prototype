@@ -191,14 +191,4 @@ describe('Transcript', () => {
     expect(fetchWindow).toHaveBeenCalledWith('c1', 0, 1);
     expect(fetchWindow).toHaveBeenCalledWith('c1', 0, 31);
   });
-
-  it('prunes its expansion state when the session is dropped', async () => {
-    seed(1);
-    mockStore.entryOpen.set('c1:e0:tool', true);
-    const { unmount } = render(Transcript);
-    await tick();
-    resetMockStore({ current: 'c2', sessions: { c2: seedState(meta('c2')) } });
-    unmount();
-    expect(mockStore.entryOpen.has('c1:e0:tool')).toBe(false);
-  });
 });

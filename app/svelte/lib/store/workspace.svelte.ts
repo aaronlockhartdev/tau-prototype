@@ -12,6 +12,7 @@ import { open as pickDirectory } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import { applySessionList } from '../rules/sessions';
 import { runSessionCommand, switchSession } from './commands';
+import { pruneSession } from '../rules/entryopen';
 import { ensureWorkspace, removeWorkspace } from '../rules/files';
 import { applyTabSelect } from '../rules/panes';
 import { clearError, store } from './state.svelte';
@@ -194,7 +195,11 @@ export async function closeWorkspace(ws: Workspace, redirect = true): Promise<vo
   }
   store.workspaces = store.workspaces.filter((w) => w.id !== ws.id);
   for (const [sid, s] of Object.entries(store.sessions)) {
-    if (s.meta.workspace === ws.id) delete store.sessions[sid];
+    if (s.meta.workspace === ws.id) {
+      delete store.sessions[sid];
+      // The dropped row's card-expansion flags go with it, keyed per session.
+      pruneSession(store.entryOpen, sid);
+    }
   }
   // The closed workspace's pane view state is dead with it.
   delete store.pane[ws.id];

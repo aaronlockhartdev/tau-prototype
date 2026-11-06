@@ -4,7 +4,6 @@
   // pattern (virtua's Svelte Chat example). Paged hydration (spec §8) is
   // driven from virtua's visible range via findItemIndex over the scroll
   // offset.
-  import { onDestroy } from 'svelte';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import EntryCard from './EntryCard.svelte';
   import SubagentBlock from './SubagentBlock.svelte';
@@ -19,6 +18,7 @@
     type TurnState
   } from '../lib/rules/windowing';
   import type { Entry } from '../lib/wire/protocol';
+  import { entryKey } from '../lib/rules/entryopen';
 
   // Sub-pixel tolerance at fractional devicePixelRatio (the Chat story's).
   const STICK_TOLERANCE = -1.5;
@@ -32,10 +32,6 @@
 
   const cur = $derived(store.current);
   const curSession = $derived(currentSession());
-  // This mount's session. A plain const, not the derived: at destroy the
-  // derived re-reads store.current (already the next session), which made
-  // the prune below a dead branch.
-  const mountedFor = store.current;
 
   let el = $state<HTMLDivElement | null>(null);
   // The virtualized content track: observed for in-place growth (below).
@@ -248,15 +244,6 @@
     shouldStickToBottom = true;
   });
 
-  onDestroy(() => {
-    // A closed workspace drops its sessions from the store — that is when
-    // this session's card expansion state goes with it (a plain session
-    // switch keeps the row, so the state persists across remounts).
-    if (mountedFor !== null && store.current !== mountedFor && !store.sessions[mountedFor]) {
-      for (const k of [...store.entryOpen.keys()]) if (k.startsWith(`${mountedFor}:`)) store.entryOpen.delete(k);
-    }
-  });
-
   // V2 turn headers: 'you' on the user's own messages, 'agent' on the first
   // entry of a response block.
   function turnLabel(idx: number): 'you' | 'agent' | '' {
@@ -315,7 +302,7 @@
                 />
               </div>
             {:else}
-              {@const hk = cur ? `${cur}:${e.id}` : e.id}
+              {@const hk = entryKey(cur, e.id)}
               <div class="rowitem" class:dim={!!followInfo}>
                 <EntryCard
                   entry={e}
