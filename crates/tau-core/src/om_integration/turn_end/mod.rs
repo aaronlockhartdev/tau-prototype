@@ -137,7 +137,12 @@ impl OmState {
         }
         self.record.observation_tokens = om::token_count(&self.record.active_observations);
         let kept: Vec<usize> = open[count..].to_vec();
-        self.record.pending_tokens = kept.iter().map(|i| chunks[*i].tokens).sum();
+        // The field is the quantity every activation gate reads — the raw
+        // window the promoted cursor leaves behind. The kept chunks' tokens are
+        // the compressions of that same raw, and a promote that left them here
+        // made the name lie: the drain gate opened on a volume no gate can see
+        // (#392's quantity, at the reading #409 added).
+        self.record.pending_tokens = self.unobserved_tokens(store)?;
         self.drain_to(store, &kept)?;
         Ok(true)
     }

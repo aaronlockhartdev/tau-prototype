@@ -1,13 +1,26 @@
 use super::*;
 
 #[test]
-fn config_fold_maps_increment_to_activation() {
+fn config_fold_carries_the_increment_through() {
     let om = crate::config::Om::default(); // 30k / 40k / 6k
     let state = OmState::from_config(&om, OmRecord::default());
     assert_eq!(state.config.observe_threshold, 30_000);
     assert_eq!(state.config.reflect_threshold, 40_000);
-    assert!((state.config.buffer_activation - 0.8).abs() < 1e-9);
-    assert_eq!(state.config.buffer_increment(), 6_000);
+    assert_eq!(state.config.buffer_increment, 6_000);
+    assert_eq!(state.config.retention_floor(), 6_000);
+}
+
+#[test]
+fn an_increment_past_the_threshold_folds_to_the_threshold() {
+    // The fold's cap: an interval that reaches the window keeps the whole window
+    // (activation removes nothing) rather than flooring above it.
+    let om = crate::config::Om {
+        buffer_increment: 50_000,
+        ..crate::config::Om::default()
+    }; // 30k threshold, an interval past it
+    let state = OmState::from_config(&om, OmRecord::default());
+    assert_eq!(state.config.buffer_increment, 30_000);
+    assert_eq!(state.config.retention_floor(), 30_000);
 }
 
 #[test]

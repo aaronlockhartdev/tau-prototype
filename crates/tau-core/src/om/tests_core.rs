@@ -82,26 +82,27 @@ fn fixed_threshold_ignores_observation_size() {
 }
 
 #[test]
-fn buffer_increment_is_20_percent_of_the_message_threshold() {
-    assert_eq!(OmConfig::default().buffer_increment(), 6_000);
-    let c = OmConfig {
-        observe_threshold: 20_000,
-        buffer_activation: 0.75,
-        ..Default::default()
-    };
-    assert_eq!(c.buffer_increment(), 5_000);
+fn the_interval_is_the_one_knob_its_ratios_price() {
+    assert_eq!(OmConfig::default().buffer_increment, 6_000);
+    // Mastra prices the fill step and the retention floor from two ratios,
+    // `resolveBufferTokens` (30k * 0.2) and `resolveRetentionFloor`
+    // (30k * (1 - 0.8)) — both 6k. tau's knob is that number, so the field and
+    // the floor it stands for are one value, not a round trip through f64.
+    assert_eq!(OmConfig::default().retention_floor(), 6_000);
 }
 
 #[test]
-fn retention_floor_is_ratio_and_absolute() {
-    assert_eq!(OmConfig::default().retention_floor(), 6_000);
-    let absolute = OmConfig {
-        buffer_activation: 2_000.0,
+fn an_interval_past_the_window_is_capped_at_the_window() {
+    // The negative, from mastra's `clamp(0, 1)` on the activation ratio: the
+    // floor never passes the threshold it floors, so activation keeps the whole
+    // window rather than removing a negative span.
+    let c = OmConfig {
+        observe_threshold: 20_000,
+        buffer_increment: 25_000,
         ..Default::default()
     };
-    assert_eq!(absolute.retention_floor(), 2_000);
+    assert_eq!(c.retention_floor(), 20_000);
 }
-
 #[test]
 fn projected_removal_prefers_the_nearest_over_boundary() {
     // 6k chunks (the ~6k increment); pending 30k, floor 6k → target 24k.

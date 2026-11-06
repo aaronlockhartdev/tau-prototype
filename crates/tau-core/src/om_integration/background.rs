@@ -22,7 +22,7 @@ use tau_protocol::EntryKind;
 /// there on, so the cycle cadence doubles as the observe threshold approaches
 /// (mastra `calculateObservationInterval`: `threshold - 1.1 * interval`).
 fn effective_interval(pending: u64, config: &OmConfig) -> u64 {
-    let full = u64::from(config.buffer_increment());
+    let full = u64::from(config.buffer_increment);
     let ramp_point = u64::from(config.observe_threshold).saturating_sub(full * 11 / 10);
     if pending >= ramp_point {
         full / 2
@@ -36,7 +36,7 @@ fn effective_interval(pending: u64, config: &OmConfig) -> u64 {
 /// #408 retired the quantity that used to name it.
 #[must_use]
 fn trickle_floor(config: &OmConfig) -> u32 {
-    config.buffer_increment() / 2
+    config.buffer_increment / 2
 }
 /// An interval boundary was crossed since the last commit (D5): floor
 /// division over the effective interval, comparing against the LARGER of
@@ -193,8 +193,7 @@ fn read_candidates(
     // An empty candidate set — the turn-end pass committed everything the
     // spawn snapshot saw (D4: the file cursor wins over the snapshot) — has no
     // span: consume the trigger and stop.
-    let Some((span, _, coverage)) = live.observe_head(&candidates, config.buffer_increment())
-    else {
+    let Some((span, _, coverage)) = live.observe_head(&candidates, config.buffer_increment) else {
         g.om_inflight = None;
         return None;
     };
@@ -285,7 +284,7 @@ mod tests {
     fn config(observe: u32, increment: u32) -> OmConfig {
         OmConfig {
             observe_threshold: observe,
-            buffer_activation: 1.0 - f64::from(increment) / f64::from(observe),
+            buffer_increment: increment,
             ..Default::default()
         }
     }
@@ -331,7 +330,7 @@ mod tests {
         // zero increment — the retention floor at 1.0 — leaves the boundary
         // math no multiples to cross: the cycles stay silent at any volume.
         let cfg = config(30_000, 0);
-        assert_eq!(cfg.buffer_increment(), 0);
+        assert_eq!(cfg.buffer_increment, 0);
         assert!(!boundary_crossed(60_000, &cfg, 0, 0));
         assert!(!boundary_crossed(60_000, &cfg, 12_000, 30_000));
     }

@@ -22,10 +22,14 @@ pub struct OmConfig {
     pub observe_threshold: u32,
     /// Observation tokens at which the Reflector fires.
     pub reflect_threshold: u32,
-    /// Raw tokens retained after activation: a ratio in (0, 1) of the message
-    /// threshold, or an absolute count when ≥ 1000
-    /// (`fixtures/references/mastra-om/thresholds.ts` `resolveRetentionFloor`).
-    pub buffer_activation: f64,
+    /// The volume one Observer buffer cycle covers: the interval between
+    /// cycles, the bound of a background slice, and the raw activation keeps
+    /// standing. Mastra prices those from two ratios, `resolveBufferTokens`
+    /// (`threshold * bufferTokens`) and `resolveRetentionFloor`
+    /// (`threshold * (1 - bufferActivation)`); at its defaults (0.2, 0.8) those
+    /// are complements that agree at 6k. tau states the one quantity in absolute
+    /// tokens, so both forms collapse onto this field: no ratio, no f64.
+    pub buffer_increment: u32,
     /// Dynamic threshold as overflow guard (spec §4): when true, the message
     /// threshold expands into unused observation space up to the shared total
     /// budget (`fixtures/references/mastra-om/thresholds.ts` `calculateDynamicThreshold`).
@@ -44,7 +48,7 @@ impl Default for OmConfig {
         Self {
             observe_threshold: 30_000,
             reflect_threshold: 40_000,
-            buffer_activation: 0.8,
+            buffer_increment: 6_000,
             share_token_budget: false,
             retries: crate::config::OmRetries::default(),
             generation: crate::config::GenerationProfile::default(),
@@ -68,44 +72,19 @@ impl OmConfig {
         effective.max(self.observe_threshold)
     }
 
-    /// The ~6k-token buffering increment at the default thresholds
-    /// (`resolveBufferTokens`: ratios of the message threshold).
-    #[allow(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        clippy::as_conversions,
-        clippy::cast_precision_loss,
-        reason = "f64 to u64 has no TryFrom; ratio clamped to [0,1] keeps the product within [0, observe_threshold]"
-    )]
+    /// Raw tokens activation keeps standing (`resolveRetentionFloor`): the
+    /// promote's removal target is `pending - floor`, so the window it leaves
+    /// behind lands at or below this. The interval is that floor (field doc),
+    /// capped at the threshold as Mastra caps its activation ratio at 1: an
+    /// interval that reaches the window keeps the whole window (activation
+    /// removes nothing).
     #[must_use]
-    pub fn buffer_increment(&self) -> u32 {
-        let ratio = self.buffer_activation.clamp(0.0, 1.0);
-        u32::try_from((f64::from(self.observe_threshold) * (1.0 - ratio)).round() as u64)
-            .expect("ratio clamped to [0,1]: the product stays in [0, observe_threshold]")
-    }
-
-    /// Raw tokens kept after activation (`resolveRetentionFloor`).
-    #[allow(
-        clippy::as_conversions,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "f64↔u64/u32 has no std TryFrom; soft-token config values stay far below u32::MAX"
-    )]
-    #[must_use]
-    #[allow(
-        clippy::as_conversions,
-        clippy::cast_precision_loss,
-        reason = "f64 to u64 / u64 to f64 have no TryFrom; the product stays within [0, observe_threshold]"
-    )]
-    pub fn retention_floor(&self) -> u32 {
-        let threshold = u64::from(self.observe_threshold);
-        if self.buffer_activation >= 1000.0 {
-            return u32::try_from(self.buffer_activation as u64)
-                .expect("guarded >= 1000.0, far below u32::MAX");
+    pub const fn retention_floor(&self) -> u32 {
+        if self.buffer_increment > self.observe_threshold {
+            self.observe_threshold
+        } else {
+            self.buffer_increment
         }
-        let ratio = self.buffer_activation.clamp(0.0, 1.0);
-        u32::try_from((threshold as f64 * (1.0 - ratio)).round() as u64)
-            .expect("ratio clamped to [0,1]: the product stays in [0, threshold]")
     }
 }
 
