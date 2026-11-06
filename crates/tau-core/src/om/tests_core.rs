@@ -103,6 +103,7 @@ fn an_interval_past_the_window_is_capped_at_the_window() {
     };
     assert_eq!(c.retention_floor(), 20_000);
 }
+
 #[test]
 fn projected_removal_prefers_the_nearest_over_boundary() {
     // 6k chunks (the ~6k increment); pending 30k, floor 6k → target 24k.
