@@ -12,6 +12,7 @@ import type { Command, CommandOutput, EntryMeta, LiveState, SessionMeta, ViewEnt
 import { applySessionList, openSession } from '../rules/sessions';
 import { decodeEntry, payloadFor } from '../wire/entries';
 import { fetchWindow, openWorkspace, store } from './store.svelte';
+import { freshStore } from '../testing/store-harness';
 
 const WS: Workspace = { id: 'w1', name: 'proj', cwd: '/tmp/proj' };
 
@@ -63,22 +64,6 @@ function mockIPC(handler: (cmd: Command) => CommandOutput | Promise<CommandOutpu
   mockInvoke.mockImplementation(async (_name: unknown, args: { command: Command }) => handler(args.command));
 }
 
-function freshStore() {
-  store.workspaces = [];
-  store.current = null;
-  store.sessions = {};
-  store.files = {};
-  store.fileErrors = {};
-  store.skills = {};
-  store.providers = {};
-  store.pane = {};
-  store.tabSelected = [];
-  store.tabSelAnchor = null;
-  store.loading = false;
-  store.error = null;
-  store.tailJump = 0;
-  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-}
 
 beforeEach(() => {
   freshStore();

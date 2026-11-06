@@ -8,67 +8,17 @@
 // A `.svelte.ts` module (not `.svelte`) so svelte-check sees the named
 // exports; it needs `allowImportingTsExtensions` in tsconfig.json.
 import { vi } from 'vitest';
-import type { FilesCache } from '../rules/files';
-import type { OpenFiles } from '../rules/openfiles';
-import type { PaneState } from '../rules/panes';
-import type { FileEntry, GitStatus, ProviderInfo, SkillInfo, SessionMeta, WaitingOn, Workspace } from '../wire/protocol';
+import type { FileEntry, ProviderInfo, SessionMeta, WaitingOn } from '../wire/protocol';
+import { defaultPane, type PaneState } from '../rules/panes';
 import { attentionOf, type AttentionItem } from '../display/attention';
 import { makeStub, type SessionState } from '../rules/sessions';
+import { defaultStore } from '../store/defaults';
 
-export function paneDefault(): PaneState {
-  return {
-    center: 'chat',
-    ltab: 'sessions',
-    rtab: 'subs',
-    historyOpen: false,
-    openGroups: null,
-    renamingId: null,
-    archOpen: false,
-    selSub: null,
-    selected: [],
-    selAnchor: null
-  };
-}
+// The pane and the whole bag come from the app's own defaults (`rules/panes.ts`,
+// `store/defaults.ts`), so a field added to either is seeded and reset here
+// with no second list to keep in step (#326).
 
-export function freshDefaults() {
-  return {
-    focus: false,
-    // The shared clock the age labels and the session sorts read (the real store
-    // ticks it every 30 s; a test sets it to pin a bucket).
-    now: Date.now(),
-    fullscreen: false,
-    follow: null as string | null,
-    modelMenuOpen: false,
-    reasoningOpen: true,
-    entryOpen: new Map(),
-    workspaces: [] as Workspace[],
-    current: null as string | null,
-    tailJump: 0,
-    sessions: {} as Record<string, SessionState>,
-    loading: false,
-    error: null as string | null,
-    renderRange: '',
-    skills: {} as Record<string, SkillInfo[]>,
-    providers: {} as Record<string, ProviderInfo[]>,
-    files: {} as FilesCache,
-    fileErrors: {} as Record<string, Record<string, string>>,
-    gitStatus: {} as Record<string, GitStatus | null>,
-    openFiles: {} as OpenFiles,
-    activeFile: null as { workspace: string; path: string } | null,
-    activeFileNew: null as string | null,
-    activeFileBase: null as string | null,
-    activeFileError: null as string | null,
-    attentionOpen: false,
-    paletteOpen: false,
-    fleetOpen: false,
-    focusInspector: null as 'left' | 'right' | null,
-    pane: {} as Record<string, PaneState>,
-    tabSelected: [] as string[],
-    tabSelAnchor: null as string | null
-  };
-}
-
-const store = $state(freshDefaults());
+const store = $state(defaultStore());
 export function attention(): AttentionItem[] {
   return attentionOf(store.sessions);
 }
@@ -112,7 +62,7 @@ export function pane(ws: string | null): PaneState | null {
 }
 export function ensurePane(ws: string): PaneState {
   if (!store.pane[ws]) {
-    store.pane[ws] = paneDefault();
+    store.pane[ws] = defaultPane();
   }
   return store.pane[ws];
 }
@@ -159,8 +109,7 @@ const commandFns = [
 ];
 
 export function resetMockStore(partial: Partial<typeof store> = {}) {
-  const d = freshDefaults();
-  Object.assign(store, d, partial);
+  Object.assign(store, defaultStore(), partial);
   for (const fn of commandFns) fn.mockReset();
   windowTitle.mockImplementation(() => 'tau');
   fetchProviders.mockResolvedValue([]);

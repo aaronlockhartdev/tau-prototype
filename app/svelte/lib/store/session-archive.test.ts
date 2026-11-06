@@ -11,6 +11,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(() => Promise.resolve(
 import type { Command, CommandOutput, SessionMeta, Workspace } from '../wire/protocol';
 import { applySessionList } from '../rules/sessions';
 import { archiveSession, deleteSession, restoreSession, store } from './store.svelte';
+import { freshStore } from '../testing/store-harness';
 
 const WS: Workspace = { id: 'w1', name: 'proj', cwd: '/tmp/proj' };
 
@@ -53,22 +54,6 @@ function defaultIPC(over: Partial<Record<Command['type'], (cmd: Command) => Comm
   });
 }
 
-function freshStore() {
-  store.workspaces = [];
-  store.current = null;
-  store.sessions = {};
-  store.files = {};
-  store.fileErrors = {};
-  store.skills = {};
-  store.providers = {};
-  store.pane = {};
-  store.tabSelected = [];
-  store.tabSelAnchor = null;
-  store.loading = false;
-  store.error = null;
-  store.tailJump = 0;
-  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-}
 
 beforeEach(() => {
   freshStore();

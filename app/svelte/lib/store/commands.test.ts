@@ -10,6 +10,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => mockInv
 import { type Command, type CommandOutput, type SessionMeta, type Workspace } from '../wire/protocol';
 import { openSession } from '../rules/sessions';
 import { store } from './store.svelte';
+import { freshStore } from '../testing/store-harness';
 import {
   newSession,
   refetchSessionList,
@@ -68,14 +69,6 @@ function defaultIPC(over: Partial<Record<Command['type'], (cmd: Command) => Comm
   mockIPC((cmd) => (over[cmd.type] ?? base[cmd.type]!) (cmd));
 }
 
-function freshStore() {
-  store.workspaces = [];
-  store.current = null;
-  store.sessions = {};
-  store.pane = {};
-  store.loading = false;
-  store.error = null;
-}
 
 function oneSession(): void {
   store.sessions = openSession({}, 's1', snap('s1').snapshot);

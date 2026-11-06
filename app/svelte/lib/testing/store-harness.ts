@@ -14,7 +14,7 @@ import type {
 import { store } from '../store/store.svelte';
 import { payloadFor } from '../wire/entries';
 import { subInfo, type SubFixture } from './state';
-
+import { defaultStore } from '../store/defaults';
 export const WS: Workspace = { id: 'w1', name: 'proj', cwd: '/tmp/proj' };
 
 export function meta(id: string, workspace = WS.id, extra: Partial<SessionMeta> = {}): SessionMeta {
@@ -137,22 +137,9 @@ export function bindIPC(mockInvoke: Mock) {
   return { mockIPC, defaultIPC };
 }
 
+// The bag back to its initial shape: the one source (`state.svelte`'
+// `defaultStore`) plus the IPC seam, so no per-suite field list can drift (#326).
 export function freshStore() {
-  store.workspaces = [];
-  store.current = null;
-  store.sessions = {};
-  store.files = {};
-  store.fileErrors = {};
-  store.skills = {};
-  store.providers = {};
-  store.pane = {};
-  store.tabSelected = [];
-  store.tabSelAnchor = null;
-  store.loading = false;
-  store.error = null;
-  store.tailJump = 0;
-  store.reasoningOpen = true;
-  store.modelMenuOpen = false;
-  store.entryOpen = new Map();
+  Object.assign(store, defaultStore());
   (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
 }
