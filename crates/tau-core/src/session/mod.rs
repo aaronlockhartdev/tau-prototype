@@ -9,12 +9,13 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use self::log::Loaded;
 pub(crate) use tau_protocol::EntryKind;
 
 /// Session file format version — a versioned surface separate from the
@@ -60,24 +61,11 @@ pub struct SessionStore {
     created: u64,
     title: Option<String>,
     parent: Option<String>,
-    loaded: bool,
-    ids: HashSet<String>,
-    next: u64,
-    /// The loaded entry lines in file order (empty lines kept as `None`
-    /// so the in-memory paging indexes match the file's), plus this store's
-    /// own appends: the live session's paged reads are served from here
-    /// without re-opening the file. The file-backed reads (`entries_range`,
-    /// `entries_since`, `entry`) stay the verification path and are
-    /// untouched.
-    entries: Vec<Option<Entry>>,
-    /// Each entry line's byte length (a snapshot's `size` field, served
-    /// without re-serializing the entry).
-    entry_len: Vec<usize>,
-    /// The file length the in-memory log is current to: the freshness
-    /// check (`refresh_if_grown`) re-opens when the file has grown past it
-    /// (an external writer — the 10k fixture test), so a live read never
-    /// serves a stale log.
-    file_len: u64,
+    /// The in-memory log and the file length it is proven at (`Loaded`,
+    /// H10): `None` until this store has read the file, so every read knows
+    /// whether it has a mirror to serve from, and a mirror read carries the
+    /// length it is valid at.
+    log: Option<Loaded>,
     /// The load generation: `open` bumps it, so a caller's cache of loaded-log
     /// rows can tell one file from the next under the same session id
     /// (`Skeleton`'s identity, #316).
@@ -152,15 +140,7 @@ impl SessionStore {
             created: 0,
             title: None,
             parent: None,
-            loaded: false,
-            ids: HashSet::new(),
-            // 1-based, matching open()'s empty-file baseline and the id
-            // series real sessions carry: a fresh session's first entry is
-            // 00000001 whether or not the store reloads before minting.
-            next: 1,
-            entries: Vec::new(),
-            entry_len: Vec::new(),
-            file_len: 0,
+            log: None,
             load_seq: 0,
             entry_event_hook: None,
         }
@@ -232,9 +212,14 @@ impl SessionStore {
     /// handle writes next.
     pub fn mint_id(&mut self) -> Result<String, Error> {
         self.refresh_if_grown()?;
-        let id = format!("{:08}", self.next);
-        self.next += 1;
-        Ok(id)
+        // The counter lives in the mirror, so a mint has read the file by
+        // construction: `refresh_if_grown` opens when there is no mirror, and
+        // a failed open returned above (H10).
+        let log = self
+            .log
+            .as_mut()
+            .expect("refresh_if_grown leaves a loaded log");
+        Ok(format!("{:08}", log.take_next()))
     }
 
     fn new_entry(
@@ -276,18 +261,31 @@ impl SessionStore {
         let mut line = serde_json::to_string(&header)?;
         line.push('\n');
         fs::write(self.path(), &line)?;
-        self.file_len = u64::try_from(line.len()).expect("file length, well under u64::MAX");
+        // This store wrote the file: it holds the mirror of what the file
+        // holds (nothing) at the length it wrote (H10).
+        self.log = Some(Loaded::new(
+            u64::try_from(line.len()).expect("file length, well under u64::MAX"),
+        ));
         Ok(())
     }
 
-    /// Load the header and all entry ids, verifying every line's CRC. A
-    /// torn last line (process killed mid-append) is skipped in memory —
+    /// Load the header and every entry, verifying each line's CRC, into the
+    /// store's mirror `Loaded` — the entries plus the file length they are
+    /// proven at (H10).
+    ///
+    /// A torn last line (process killed mid-append) is skipped in memory —
     /// the read path never rewrites the file (the writer settles the tail
-    /// at the next append); any other bad line is corruption.
+    /// at the next append); any other bad line is corruption. A failed open
+    /// leaves the store with no mirror, so the failed read that follows it
+    /// reaches no rows.
     pub fn open(&mut self) -> Result<(), Error> {
         self.load_seq += 1;
+        // A store mid-open has no mirror: the load generation moved, and the
+        // rows the old one held describe the file this open has not read.
+        self.log = None;
         let raw = fs::read_to_string(self.path()).map_err(|e| Error::Other(e.to_string()))?;
-        self.file_len = u64::try_from(raw.len()).expect("file length, well under u64::MAX");
+        let mut log =
+            Loaded::new(u64::try_from(raw.len()).expect("file length, well under u64::MAX"));
         let lines = Self::entry_lines(&raw);
         let Some(header_line) = lines.first() else {
             return Err(Error::Other("session file has no header".into()));
@@ -308,19 +306,14 @@ impl SessionStore {
                 header.id, self.id
             )));
         }
-        self.leaf = header.leaf.clone();
+        self.leaf.clone_from(&header.leaf);
         self.created = header.created;
         self.title = header.title;
         self.parent = header.parent;
 
-        self.ids.clear();
-        self.entries.clear();
-        self.entry_len.clear();
-        self.next = 1;
         for (i, line) in lines.iter().enumerate().skip(1) {
             if line.is_empty() {
-                self.entries.push(None);
-                self.entry_len.push(0);
+                log.push_empty();
                 continue;
             }
             let entry: Entry = match line.parse::<Entry>() {
@@ -328,23 +321,16 @@ impl SessionStore {
                 Err(_) => return Err(Error::Other(format!("malformed entry on line {}", i + 1))),
             };
             entry.verify(i + 1)?;
-            // The parse default is 0, and 0 can only lower the counter —
-            // never a collision: a minted id is `{:08}` of a u64 (mint_id),
-            // so any file id textually equal to one parses and pushes the
-            // counter past it. An id that fails to parse is a non-canonical
-            // line from outside this build: it keeps its slot, and its
-            // number is invisible to the mint.
-            self.next = self.next.max(entry.id.parse::<u64>().unwrap_or(0) + 1);
-            self.ids.insert(entry.id.clone());
-            self.entries.push(Some(entry));
-            self.entry_len.push(line.len());
+            log.push_entry(entry, line.len());
         }
-        self.loaded = true;
+        self.log = Some(log);
         Ok(())
     }
 
+    /// The mirror opens on demand: a store that has never read its file reads
+    /// it now, so a write path learns the file's id set before it writes.
     fn ensure_open(&mut self) -> Result<(), Error> {
-        if !self.loaded {
+        if self.log.is_none() {
             self.open()?;
         }
         Ok(())
