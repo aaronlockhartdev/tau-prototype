@@ -2,9 +2,9 @@
 
 use super::{
     AgentSession, Arc, AtomicBool, AtomicU64, BTreeMap, ChildProviderFactory, Config,
-    ConfigRejection, ConfigState, Duration, Event, ForwardingProvider, HashMap, Lane, MessageLane,
-    Mutex, Ordering, Path, PathBuf, ProtocolError, SessionMeta, Skeleton, SkillInfo,
-    SystemEventKind, TurnProviderRef, Watcher, Weak, Workspace, config, mpsc, skill_info,
+    ConfigRejection, ConfigState, Duration, Event, HashMap, Lane, MessageLane, Mutex, Ordering,
+    Path, PathBuf, ProtocolError, SessionMeta, Skeleton, SkillInfo, SystemEventKind,
+    TurnProviderRef, Watcher, Weak, Workspace, config, mpsc, skill_info,
 };
 
 /// The watcher's debounce window (design #30): a save burst (a temp-write
@@ -36,9 +36,10 @@ pub(crate) struct LiveSession {
     /// with no message.
     pub(crate) stop: Arc<AtomicBool>,
     pub(crate) turn: AtomicBool,
-    /// The forwarding provider (the only live surface that sees stream
-    /// events); also the provider the loop runs against.
-    pub(crate) provider: Arc<ForwardingProvider>,
+    /// The provider the loop runs against, and the surface the post-turn
+    /// reconciliation reads the turn's calls from (`TurnProvider::call_log`).
+    /// A child's is the provider its agent has — one object per child (#175).
+    pub(crate) provider: TurnProviderRef,
     pub(crate) cwd: PathBuf,
     /// The snapshot skeleton this session's polls reuse (#316); see
     /// `super::Skeleton`.

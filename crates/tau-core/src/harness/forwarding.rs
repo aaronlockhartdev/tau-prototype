@@ -4,9 +4,9 @@ use super::{
     AgentSession, Arc, AtomicBool, AtomicU64, BoxedDrive, ChildDriver, ChildProviderFactory,
     Config, ContextMode, Core, Duration, Event, HashMap, LiveSession, Mutex, Ordering,
     PipeCounters, ProviderTurn, ReadoptNotice, ReclaimNotice, ResponseRequest, SessionMeta,
-    SessionStore, Skeleton, SkillInfo, SpawnNotice, StateNotice, SubagentBridge, SubagentEventKind,
-    SubagentInfo, Supervisor, TurnEvent, TurnProvider, TurnProviderRef, TurnSink, Usage, WakeKind,
-    WakeNotice, Weak, mpsc, pipe_send, provider, run_turn,
+    Skeleton, SkillInfo, SpawnNotice, StateNotice, SubagentBridge, SubagentEventKind, SubagentInfo,
+    TurnEvent, TurnProvider, TurnProviderRef, TurnSink, Usage, WakeKind, WakeNotice, Weak, mpsc,
+    pipe_send, provider, run_turn,
 };
 use crate::config::ProviderRef;
 use std::future::Future;
@@ -25,15 +25,12 @@ pub(crate) struct ForwardingProvider {
     pub(crate) pipe: PipeCounters,
     pub(crate) workspace: String,
     pub(crate) session: String,
-    pub(crate) stop: Arc<AtomicBool>,
     pub(crate) call_seq: AtomicU64,
-    /// Call ids in start order; a turn diffs its assistant entries against
-    /// this (the kth entry in a turn is the kth call).
-    pub(crate) calls: Arc<Mutex<Vec<String>>>,
-    /// Calls whose `Completed` frame was seen: the post-turn diff uses this
-    /// to tell a cut empty partial (interrupted end) from a completed empty
-    /// call (clean end).
-    pub(crate) completed: Arc<Mutex<HashMap<String, bool>>>,
+    /// This session's stream record: the call ids it starts, their completion
+    /// notes, and the one stop flag. It crosses back to the live session
+    /// through `TurnProvider::call_log` — the provider the agent calls and the
+    /// provider the reconciliation reads are one object (#175).
+    log: provider::CallLog,
 }
 
 impl ForwardingProvider {
@@ -53,23 +50,28 @@ impl ForwardingProvider {
             pipe,
             workspace,
             session,
-            stop,
             call_seq: AtomicU64::new(0),
-            calls: Arc::new(Mutex::new(Vec::new())),
-            completed: Arc::new(Mutex::new(HashMap::new())),
+            log: provider::CallLog {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                completed: Arc::new(Mutex::new(HashMap::new())),
+                stop,
+            },
         }
-    }
-
-    /// Point this session's calls at `inner` — the endpoint the model its id
-    /// names is addressed at (the `session_set_model` command's live half).
-    /// It takes effect at the next call: an in-flight stream keeps the endpoint
-    /// it started on, so the switch lands at the turn boundary.
-    pub(crate) fn set_route(&self, inner: TurnProviderRef) {
-        *self.route.lock() = inner;
     }
 }
 
 impl TurnProvider for ForwardingProvider {
+    fn call_log(&self) -> provider::CallLog {
+        self.log.clone()
+    }
+
+    /// A model switch to another provider's model rebinds the endpoint here.
+    /// It takes effect at the next call: an in-flight stream keeps the endpoint
+    /// it started on, so the switch lands at the turn boundary (#336).
+    fn set_route(&self, inner: TurnProviderRef) {
+        *self.route.lock() = inner;
+    }
+
     fn forwarding_inner(&self) -> Option<TurnProviderRef> {
         Some(self.route.lock().clone())
     }
@@ -95,16 +97,14 @@ impl TurnProvider for ForwardingProvider {
             pipe: self.pipe.clone(),
             workspace: self.workspace.clone(),
             session: self.session.clone(),
-            stop: self.stop.clone(),
-            calls: self.calls.clone(),
-            completed: self.completed.clone(),
+            log: self.log.clone(),
             call_id,
             inner: sink,
         };
         // Record the call at start, not first event (#67): a call aborted
         // before it emits anything is still a call, and must finalize like
         // any other — a StreamStart now, a StreamEnd at turn settlement.
-        forward.calls.lock().push(forward.call_id.clone());
+        forward.log.calls.lock().push(forward.call_id.clone());
         forward.send(Event::StreamStart {
             workspace: forward.workspace.clone(),
             session: forward.session.clone(),
@@ -123,9 +123,7 @@ pub(crate) struct ForwardSink<'a> {
     pipe: PipeCounters,
     pub(crate) workspace: String,
     session: String,
-    stop: Arc<AtomicBool>,
-    calls: Arc<Mutex<Vec<String>>>,
-    completed: Arc<Mutex<HashMap<String, bool>>>,
+    log: provider::CallLog,
     call_id: String,
     inner: &'a mut dyn TurnSink,
 }
@@ -144,11 +142,11 @@ impl TurnSink for ForwardSink<'_> {
         // completed note: a stop landing with the Completed frame means
         // the call was cut, so an entry-less one must read interrupted,
         // not completed, in the reconciliation.
-        let stopped = self.stop.load(Ordering::SeqCst);
+        let stopped = self.log.stop.load(Ordering::SeqCst);
         if let TurnEvent::Completed(_, _) = &event
             && !stopped
         {
-            self.completed.lock().insert(self.call_id.clone(), true);
+            self.log.completed.lock().insert(self.call_id.clone(), true);
         }
         if stopped {
             return false;
@@ -156,7 +154,7 @@ impl TurnSink for ForwardSink<'_> {
         self.inner.event(event)
     }
     fn stop_signal(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(stop_flag(&self.stop))
+        Box::pin(stop_flag(&self.log.stop))
     }
 }
 
@@ -269,7 +267,6 @@ pub(crate) struct ForwardingChildFactory {
     pub(crate) tx: mpsc::Sender<Event>,
     pub(crate) pipe: PipeCounters,
     pub(crate) workspace: String,
-    pub(crate) providers: Mutex<HashMap<String, Arc<ForwardingProvider>>>,
 }
 impl ChildProviderFactory for ForwardingChildFactory {
     fn create(&self, child: &str, model: &str, stop: &Arc<AtomicBool>) -> TurnProviderRef {
@@ -285,28 +282,14 @@ impl ChildProviderFactory for ForwardingChildFactory {
                 provider: &self.provider,
             },
         );
-        let provider = Arc::new(ForwardingProvider::new(
+        Arc::new(ForwardingProvider::new(
             session_inner(&self.client, owner, &self.requests),
             self.tx.clone(),
             self.pipe.clone(),
             self.workspace.clone(),
             child.to_owned(),
             stop.clone(),
-        ));
-        // Stash it so the bridge's spawned reuses this exact provider for the
-        // child's LiveSession (one per child, as the root has).
-        self.providers
-            .lock()
-            .insert(child.to_owned(), provider.clone());
-        provider
-    }
-}
-
-impl ForwardingChildFactory {
-    /// The concrete provider `create` made for a child, so the bridge's
-    /// `LiveSession` shares it with the child's agent (one provider, #175).
-    fn take_provider(&self, child: &str) -> Option<Arc<ForwardingProvider>> {
-        self.providers.lock().remove(child)
+        ))
     }
 }
 
@@ -338,39 +321,15 @@ impl ChildDriver for TurnChildDriver {
 pub(crate) struct SessionSubagentBridge {
     pub(crate) core: Arc<Core>,
     pub(crate) workspace: String,
-    pub(crate) client: reqwest::Client,
-    pub(crate) provider: crate::config::Provider,
-    pub(crate) requests: crate::config::Requests,
-    pub(crate) sup: Mutex<Option<Weak<Supervisor>>>,
-    pub(crate) factory: Option<Arc<ForwardingChildFactory>>,
 }
 impl SubagentBridge for SessionSubagentBridge {
     fn spawned(&self, n: &SpawnNotice) {
-        // Register the child as a live session so the GUI can open it and
-        // the driver can feed it turns.
-        let Some(agent) = self
-            .sup
-            .lock()
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .and_then(|s| s.child_agent(&n.handle))
-        else {
-            return;
-        };
         // The handle is opaque (R3): record which parent minted it — the
         // GUI's handle-carrying commands resolve the parent from the
         // registry, never from the handle's format.
         self.core.register_child_handle(&n.handle, &n.parent);
-        let Some(parent_live) = self.core.sessions.lock().get(&n.parent).cloned() else {
-            return;
-        };
-        let mut store = SessionStore::for_workspace(&parent_live.cwd, &n.child);
-        if store.open().is_err() {
-            return; // the spawn failed after the notice; nothing to register
-        }
-        // The core set the child's header title at spawn (type + adjective-noun);
-        // the event carries it so the GUI's stub gets the real name.
-        let title = store.title().unwrap_or("sub-agent").to_string();
+        // The spawn minted the title into the child's header and carried it on
+        // the notice, so the GUI's stub gets the real name.
         self.core.emit(Event::SubagentEvent {
             workspace: self.workspace.clone(),
             session: n.parent.clone(),
@@ -379,47 +338,35 @@ impl SubagentBridge for SessionSubagentBridge {
                 child: n.child.clone(),
                 agent_type: n.agent_type.clone(),
                 context_mode: mode_to_protocol(n.context_mode),
-                title,
+                title: n.title.clone(),
             },
         });
-        // Reuse the child's own provider (the one its agent runs through) so
-        // the post-turn reconciliation emits StreamEnd (#175); a non-forwarding
-        // test factory falls back to a fresh one.
-        let provider = self
-            .factory
-            .as_ref()
-            .and_then(|f| f.take_provider(&n.child))
-            .unwrap_or_else(|| {
-                Arc::new(ForwardingProvider::new(
-                    session_inner(&self.client, &self.provider, &self.requests),
-                    self.core.events_tx.clone(),
-                    self.core.pipe.clone(),
-                    self.workspace.clone(),
-                    n.child.clone(),
-                    agent.stop_flag(),
-                ))
-            });
         // Wire the child's event hooks (#173): the child launch path only wires
         // the plan hook, so its streaming entries never reached the GUI.
-        let blob_root = std::path::Path::new(&parent_live.cwd).join(".tau");
-        super::launch::wire_events(&self.core, &self.workspace, &n.child, &agent, &blob_root);
+        let blob_root = n.cwd.join(".tau");
+        super::launch::wire_events(&self.core, &self.workspace, &n.child, &n.agent, &blob_root);
+        // The child is registered with the provider its agent calls through —
+        // the same object the spawn handed over, built with the agent's stop
+        // flag. One provider per child, as the root has (#175): the post-turn
+        // reconciliation reads the calls the agent made from it, so the child's
+        // `StreamEnd` carries the child's own call ids.
         let live = Arc::new(LiveSession {
             meta: Mutex::new(SessionMeta {
                 id: n.child.clone(),
                 workspace: self.workspace.clone(),
-                title: store.title().map(str::to_string),
+                title: Some(n.title.clone()),
                 parent: Some(n.parent.clone()),
-                created: store.created(),
+                created: n.created,
                 leaf: None,
                 model: Some(n.model.clone()),
                 usage: None,
                 archived: false,
             }),
-            agent: agent.clone(),
-            stop: agent.stop_flag(),
+            agent: n.agent.clone(),
+            stop: n.agent.stop_flag(),
             turn: AtomicBool::new(false),
-            provider,
-            cwd: parent_live.cwd.clone(),
+            provider: n.provider.clone(),
+            cwd: n.cwd.clone(),
             skeleton: Mutex::new(Skeleton::default()),
         });
         let id = live.meta.lock().id.clone();

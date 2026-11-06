@@ -11,6 +11,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 pub use tau_protocol::StreamOutcome;
 pub use tau_protocol::payload::FunctionCall;

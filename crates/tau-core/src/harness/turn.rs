@@ -93,7 +93,11 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
         return;
     }
     let start = store.leaf().ok().flatten().map(|e| e.id);
-    let calls_before = live.provider.calls.lock().len();
+    // The provider this session's agent calls through is its own, so its call
+    // log is the record of the calls the turn made — read through the trait so
+    // a child's call ids are the child's (#175).
+    let log = live.provider.call_log();
+    let calls_before = log.calls.lock().len();
 
     if let Err(e) = live.agent.process().await {
         // One locked scope: two meta locks in one expression would be a
@@ -134,8 +138,7 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
                 queue_changed = true;
             }
             EntryKind::Assistant => {
-                let call_id = live
-                    .provider
+                let call_id = log
                     .calls
                     .lock()
                     .get(calls_before + assistant_index)
@@ -205,11 +208,7 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
     // interrupted end, a completed empty call a clean one — the GUI's live
     // bubble must close either way (N10).
     {
-        let (calls, completed) = {
-            let calls = live.provider.calls.lock();
-            let completed = live.provider.completed.lock();
-            (calls, completed)
-        };
+        let (calls, completed) = (log.calls.lock(), log.completed.lock());
         let new_calls = calls.len() - calls_before;
         for i in assistant_index..new_calls {
             let call_id = calls[calls_before + i].clone();
