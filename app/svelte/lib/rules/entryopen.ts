@@ -21,9 +21,9 @@ export const entryKey = (sid: string | null, entryId: string): string =>
 export const slotKey = (heightKey: string, slot: string): string =>
   `${heightKey}:${slot}`;
 
-// Drop every row a dropped session owns. In place: the map is the store's
-// persistence layer, a value the callers never replace.
-export function pruneSession(open: Map<string, boolean>, sid: string): void {
+// Drop every row a dropped session owns, in place — the record is the store's
+// own persistence layer, a value callers never replace.
+export function pruneSession(open: Record<string, boolean>, sid: string): void {
   const prefix = sessionPrefix(sid);
-  for (const key of [...open.keys()]) if (key.startsWith(prefix)) open.delete(key);
+  for (const key of Object.keys(open)) if (key.startsWith(prefix)) delete open[key];
 }

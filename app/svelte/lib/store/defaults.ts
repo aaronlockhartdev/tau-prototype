@@ -39,10 +39,10 @@ export function defaultStore() {
     // transcript window unmounts off-screen cards, so the state lives here,
     // not in the card's local $state (which would reset to collapsed on
     // remount — scrolling to the bottom collapsed every expanded card).
-    // A plain persistence map (not reactive — Svelte 5.57 deep-proxies
-    // objects/arrays in $state, not Maps): EntryCard seeds its local
-    // reactive state from it on mount and writes toggles back.
-    entryOpen: new Map<string, boolean>(),
+    // A keyed record, not a Map: `$state` deep-proxies records and not Maps
+    // (pinned in state-proxy.test.ts), so a mounted card re-reads a toggle at
+    // once. Absent key = no override, and reads follow the global `reasoningOpen`.
+    entryOpen: {} as Record<string, boolean>,
     workspaces: [] as Workspace[],
     current: null as string | null,
     // Bumped by a send to re-arm the transcript's stick-to-bottom pin.

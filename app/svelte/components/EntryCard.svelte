@@ -33,30 +33,28 @@
 
   let el = $state<HTMLDivElement | null>(null);
 
-  // Expansion state: the store map is the persistence layer (the window
-  // unmounts off-screen cards, so a purely local state would reset to
-  // collapsed on remount — scrolling to the bottom collapsed every
-  // expanded card); this local object is the reactive layer, seeded from
-  // the map on mount. (Svelte 5.57 deep-proxies plain objects and arrays
-  // in $state, but not Maps — the store map alone does not track.)
+  // Card expansion lives in the store record, keyed by this card's row + slot:
+  // the transcript window unmounts off-screen cards, so a card's own state
+  // would reset to collapsed on remount (scrolling to the bottom collapsed
+  // every expanded card). The record is also the reactive layer — `$state`
+  // deep-proxies records (state-proxy.test.ts) — so a mounted card follows a
+  // toggle written elsewhere, and a key present in the record is an explicit
+  // override that wins over the global.
   const okey = (slot: string) => slotKey(heightKey, slot);
-  let open = $state({
-    tool: !!store.entryOpen.get(okey('tool')),
-    output: !!store.entryOpen.get(okey('output')),
-    skill: !!store.entryOpen.get(okey('skill')),
-    obs: !!store.entryOpen.get(okey('obs')),
-    think: store.entryOpen.get(okey('think')) ?? false
+  const open = $derived({
+    tool: store.entryOpen[okey('tool')] ?? false,
+    output: store.entryOpen[okey('output')] ?? false,
+    skill: store.entryOpen[okey('skill')] ?? false,
+    obs: store.entryOpen[okey('obs')] ?? false,
+    think: store.entryOpen[okey('think')] ?? store.reasoningOpen
   });
   function setOpen(slot: ExpandSlot) {
     const k = okey(slot);
-    const next = !(store.entryOpen.get(k) ?? (slot === 'think' ? store.reasoningOpen : false));
-    store.entryOpen.set(k, next);
-    open[slot] = next;
+    store.entryOpen[k] = !open[slot];
   }
-  // The 'r' keybind toggles every reasoning line at once (store global);
-  // a click stores a per-entry override that then wins: the effect syncs
-  // only entries without an override, so a clicked line keeps its state
-  // across global flips.
+  // The 'r' keybind toggles every reasoning line at once (store global); a
+  // click stores a per-entry override that then wins, so a clicked line keeps
+  // its state across global flips.
   let thinkSynced = $state(false);
   $effect(() => {
     void store.reasoningOpen;
