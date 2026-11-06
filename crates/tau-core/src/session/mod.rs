@@ -224,8 +224,14 @@ impl SessionStore {
     /// failed mint. Swallowing it issued `00000001` — every session file's
     /// first id — from an unread store, and the duplicate id is what the
     /// parent-chain walk loops on (the live-om 80 GB runaway).
+    ///
+    /// The read is a growth refresh, not merely "open once": a handle kept
+    /// alive over a file a second store has appended (the harness re-opens
+    /// live sessions; fork/branch rewrite through their own stores) has a
+    /// counter behind the file, and the id it reserves is the one the other
+    /// handle writes next.
     pub fn mint_id(&mut self) -> Result<String, Error> {
-        self.ensure_open()?;
+        self.refresh_if_grown()?;
         let id = format!("{:08}", self.next);
         self.next += 1;
         Ok(id)
@@ -322,6 +328,12 @@ impl SessionStore {
                 Err(_) => return Err(Error::Other(format!("malformed entry on line {}", i + 1))),
             };
             entry.verify(i + 1)?;
+            // The parse default is 0, and 0 can only lower the counter —
+            // never a collision: a minted id is `{:08}` of a u64 (mint_id),
+            // so any file id textually equal to one parses and pushes the
+            // counter past it. An id that fails to parse is a non-canonical
+            // line from outside this build: it keeps its slot, and its
+            // number is invisible to the mint.
             self.next = self.next.max(entry.id.parse::<u64>().unwrap_or(0) + 1);
             self.ids.insert(entry.id.clone());
             self.entries.push(Some(entry));

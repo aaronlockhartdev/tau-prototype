@@ -215,7 +215,7 @@ impl AgentSession {
                     .map(|cursor| cursor.entry_id.clone()),
                 state.record.observation_tokens,
                 state.record.prefix_demoted,
-                state.buffered.len(),
+                state.buffered().len(),
             )
         })
     }

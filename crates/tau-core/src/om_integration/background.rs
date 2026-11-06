@@ -163,16 +163,16 @@ fn read_candidates(
             return None;
         }
     };
-    let mut live = OmState {
+    // The durable chunks mark the head of the branch they covered; a cycle
+    // that buffers from the branch head would re-cover it (spec §4). The
+    // furthest chunk end, not the last committed: chunks arrive in commit
+    // order, not id order (#402).
+    let buffer_cursor = super::last_chunk_end(&record.buffered_chunks);
+    let live = OmState {
         record,
         config: config.clone(),
-        buffered: Vec::new(),
-        buffer_cursor: None,
+        buffer_cursor,
     };
-    live.buffered = live.record.buffered_chunks.clone();
-    // The furthest chunk end, not the last committed: chunks arrive in
-    // commit order, not id order (#402).
-    live.buffer_cursor = super::last_chunk_end(&live.buffered);
     // The cycle's material: raw past BOTH cursors. Raw the observation
     // cursor has already covered is observed — re-showing it to the
     // Observer pays twice for one span, and with no durable chunk to
@@ -265,7 +265,6 @@ pub(crate) fn commit_chunk(
                 tracing::warn!("om: buffer cycle: chunk commit failed");
             } else if let Some(slot) = g.om.as_mut() {
                 slot.record = latest;
-                slot.buffered = slot.record.buffered_chunks.clone();
                 slot.buffer_cursor = super::last_chunk_end(&slot.record.buffered_chunks);
             }
         }

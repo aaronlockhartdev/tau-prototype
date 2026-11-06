@@ -210,7 +210,6 @@ async fn settle_promotes_the_chunks_then_observes_the_raw_tail_at_activation() {
         "observed the head",
         120,
     );
-    state.buffered = vec![head.clone()];
     state.record.buffered_chunks = vec![head];
     state.buffer_cursor = Some("00000006".into());
     let recorder = std::sync::Arc::new(RecordingProvider::new("observed the tail"));
@@ -241,8 +240,8 @@ async fn settle_promotes_the_chunks_then_observes_the_raw_tail_at_activation() {
         "the tail past the promoted chunks stayed unobserved: {:?}",
         state.record.active_observations
     );
-    assert_eq!(state.record.cursor.unwrap().entry_id, "00000021");
-    assert!(state.buffered.is_empty());
+    assert_eq!(state.record.cursor.as_ref().unwrap().entry_id, "00000021");
+    assert!(state.buffered().is_empty());
     // The Observer's transcript is the tail, not the window the chunks cover,
     // and the tail's slice, not the whole tail (#394).
     assert_eq!(recorder.observer_calls(), 1);
@@ -269,7 +268,6 @@ async fn settle_below_activation_promotes_nothing_and_calls_no_observer() {
         "observed the head",
         120,
     );
-    state.buffered = vec![head.clone()];
     state.record.buffered_chunks = vec![head];
     let recorder = std::sync::Arc::new(RecordingProvider::new("observed the tail"));
     let provider: std::sync::Arc<dyn crate::provider::TurnProvider> = recorder.clone();
@@ -282,7 +280,7 @@ async fn settle_below_activation_promotes_nothing_and_calls_no_observer() {
 
     assert_eq!(recorder.observer_calls(), 0);
     assert!(state.record.cursor.is_none());
-    assert_eq!(state.buffered.len(), 1);
+    assert_eq!(state.buffered().len(), 1);
     let raw = state.unobserved_tokens(&mut store).unwrap();
     assert!(matches!(raw, 6_000..30_000), "raw window {raw}");
     assert_eq!(state.record.pending_tokens, raw);
@@ -381,7 +379,7 @@ async fn settles_observe_bounded_slices_never_the_whole_window() {
     // reads the same number (#392).
     assert!(state.record.cursor.is_some());
     assert!(
-        state.buffered.is_empty(),
+        state.buffered().is_empty(),
         "the settle buffered: the sync arm is retired (#408)"
     );
     assert_eq!(state.record.pending_tokens, 2_000);

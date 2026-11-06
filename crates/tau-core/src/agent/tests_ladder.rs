@@ -228,8 +228,7 @@ async fn a_promote_whose_save_fails_records_the_session_stage() {
         text: "promoted chunk".into(),
         tokens: 5_000,
     };
-    om.buffered = vec![chunk("00000001", "00000010"), chunk("00000011", "00000011")];
-    om.record.buffered_chunks = om.buffered.clone();
+    om.record.buffered_chunks = vec![chunk("00000001", "00000010"), chunk("00000011", "00000011")];
     // `blobs` as a file: the oversized record's blob write is the failure.
     std::fs::write(dir.path().join(".tau/blobs"), "not a directory").unwrap();
     let provider = OmScript::dead();
@@ -278,8 +277,7 @@ async fn the_built_request_respects_the_window_fence() {
         text: "promoted chunk".into(),
         tokens: 5_000,
     };
-    om.buffered = vec![chunk("00000001", "00000010"), chunk("00000011", "00000011")];
-    om.record.buffered_chunks = om.buffered.clone();
+    om.record.buffered_chunks = vec![chunk("00000001", "00000010"), chunk("00000011", "00000011")];
     let provider = OmScript::scripted(Vec::new());
     let agent = agent_on(dir.path(), store, provider.clone(), om);
     agent.send("go", Lane::FollowUp);
@@ -454,8 +452,7 @@ async fn rung_one_fits_the_prompt_by_promoting_without_an_llm_call() {
         text: "promoted chunk".into(),
         tokens: 5_000,
     };
-    om.buffered = vec![chunk("00000001", "00000010"), chunk("00000011", "00000011")];
-    om.record.buffered_chunks = om.buffered.clone();
+    om.record.buffered_chunks = vec![chunk("00000001", "00000010"), chunk("00000011", "00000011")];
     let provider = OmScript::scripted(Vec::new());
     let agent = agent_on(dir.path(), store, provider.clone(), om);
     agent.send("go", Lane::FollowUp);
@@ -795,7 +792,7 @@ async fn rung_one_over_chunks_the_cursor_covers_moves_neither_cursor_nor_log() {
         om.record.active_observations
     );
     assert!(
-        om.buffered.is_empty(),
+        om.buffered().is_empty(),
         "the spent chunks drain, so the next activation does not walk them again"
     );
 

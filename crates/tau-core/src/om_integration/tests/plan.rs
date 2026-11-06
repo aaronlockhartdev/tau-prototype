@@ -89,7 +89,7 @@ fn plan_below_activation_is_done_the_cycles_own_the_interval() {
         TurnEndAction::Done => {}
         other => panic!("expected Done, got {other:?}"),
     }
-    assert!(state.buffered.is_empty());
+    assert!(state.buffered().is_empty());
     assert!(state.record.cursor.is_none());
 }
 
@@ -195,7 +195,6 @@ fn the_overflow_ladder_demotes_the_prefix_and_readmits_it() {
             active_observations: "b".repeat(400), // 100 tokens
             ..Default::default()
         },
-        buffered: Vec::new(),
         buffer_cursor: None,
     };
     // 200 combined tokens over the 100 budget: the prefix demotes out of
@@ -240,7 +239,6 @@ fn plan_gates_on_the_raw_window_a_promote_left_behind_the_chunks() {
     // 20 × 50k chars ≈ 250k tokens, far past the 30k activation.
     let mut store = store_with_text_entries(dir.path(), 20, 50_000);
     let mut state = OmState::from_config(&crate::config::Om::default(), OmRecord::default());
-    state.buffered = vec![chunk.clone()];
     state.record.buffered_chunks = vec![chunk.clone()];
     state.record.pending_tokens = chunk.tokens;
     let unobserved = state.unobserved(&mut store).unwrap();
@@ -253,7 +251,6 @@ fn plan_gates_on_the_raw_window_a_promote_left_behind_the_chunks() {
     let small = tempfile::tempdir().unwrap();
     let mut store = store_with_text_entries(small.path(), 3, 100);
     let mut state = OmState::from_config(&crate::config::Om::default(), OmRecord::default());
-    state.buffered = vec![chunk.clone()];
     state.record.buffered_chunks = vec![chunk];
     state.record.pending_tokens = 120;
     let unobserved = state.unobserved(&mut store).unwrap();
@@ -283,7 +280,6 @@ fn the_observe_backstop_starts_past_the_buffer_cursor_not_over_chunk_material() 
         text: "observed the head".into(),
         tokens: 6_000,
     };
-    state.buffered = vec![chunk.clone()];
     state.record.buffered_chunks = vec![chunk];
     state.buffer_cursor = Some("00000024".into());
     let unobserved = state.unobserved(&mut store).unwrap();
@@ -317,7 +313,7 @@ fn the_observe_backstop_starts_past_the_buffer_cursor_not_over_chunk_material() 
     );
     // The chunk stands until activation promotes it; the backstop's
     // observation and the chunk's are disjoint spans of the branch.
-    assert_eq!(state.buffered.len(), 1);
+    assert_eq!(state.buffered().len(), 1);
 }
 
 #[test]
@@ -338,7 +334,6 @@ fn a_fully_buffered_window_plans_done_not_an_empty_slice() {
         text: "observed the whole window".into(),
         tokens: 10_000,
     };
-    state.buffered = vec![chunk.clone()];
     state.record.buffered_chunks = vec![chunk];
     state.buffer_cursor = Some("00000040".into());
     let unobserved = state.unobserved(&mut store).unwrap();
@@ -397,7 +392,6 @@ fn an_off_branch_buffer_cursor_cuts_by_id_not_by_absence() {
         text: "observed the head".into(),
         tokens: 6_000,
     };
-    state.buffered = vec![chunk.clone()];
     state.record.buffered_chunks = vec![chunk];
     // The abandoned side's cursor: no entry on this branch carries the id,
     // and every id on the branch is behind the cursor's number.

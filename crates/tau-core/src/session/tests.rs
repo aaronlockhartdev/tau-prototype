@@ -439,6 +439,28 @@ fn session_ids_are_distinct_and_well_formed() {
 }
 
 #[test]
+fn a_live_handle_mints_past_another_handles_writes() {
+    // The second route to the duplicate id: a handle kept loaded while a
+    // second store appends to the same file. `ensure_open` is a no-op on a
+    // loaded store, so the counter stays behind the file and the id it
+    // reserves is the one the other handle writes next.
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = store(dir.path(), "s1");
+    writer.create().unwrap();
+    let mut live = store(dir.path(), "s1");
+    live.open().unwrap();
+    // The other handle takes the id `live`'s counter is pointing at.
+    let taken = writer
+        .append(EntryKind::User, serde_json::json!({"text": "grown"}), None)
+        .unwrap();
+    let minted = live.mint_id().unwrap();
+    assert_ne!(
+        minted, taken.id,
+        "a loaded handle re-minted the id another handle wrote"
+    );
+}
+
+#[test]
 fn a_fresh_handle_mints_past_the_files_ids() {
     // The 80GB runaway (2026-09-30): a freshly created handle for an
     // EXISTING file used to mint from its empty in-memory counter, re-
@@ -507,12 +529,75 @@ fn a_second_store_may_not_write_an_id_the_file_holds() {
         serde_json::json!({"text": "duplicate"}),
         None,
     );
+    let why = match dup {
+        Ok(entry) => panic!("a duplicate id was appended: {entry:?}"),
+        Err(err) => err.to_string(),
+    };
+    // The refusal names the id it refused: a store that fails every append
+    // from here on has to say which id the file already holds.
     assert!(
-        matches!(dup, Err(Error::Other(_))),
-        "a duplicate id was appended: {dup:?}"
+        why.contains(&id) && why.contains("already exists"),
+        "the refusal does not name the id: {why}"
     );
     // The file keeps the one line the winner wrote.
     assert_eq!(second.entries_range(0, usize::MAX).unwrap().len(), 1);
+}
+
+/// The parse default at the counter (`unwrap_or(0)`, mod.rs) is the third
+/// route a mint could take: a line whose id is not a number leaves the counter
+/// at the file's low end. A minted id is `{:08}` of a u64, so it can never be
+/// textually the unparseable one — the invariant this pins is that opening
+/// such a file leaves the mint on an id the file does not hold, and the append
+/// lands.
+#[test]
+fn a_file_with_an_unparseable_id_leaves_the_mint_on_an_id_the_file_lacks() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = store(dir.path(), "s1");
+    writer.create().unwrap();
+    // A line a build outside this one wrote: an id that is not `{:08}`.
+    let mut foreign = Entry {
+        id: "legacy-row-7".into(),
+        parent: None,
+        timestamp: 1_700_000_000_000,
+        kind: EntryKind::User,
+        payload: serde_json::json!({"text": "external writer"}),
+        blob: None,
+        first_kept_entry_id: None,
+        crc: None,
+    };
+    foreign.crc = Some(foreign.compute_crc());
+    let header = fs::read_to_string(writer.path()).unwrap();
+    fs::write(
+        writer.path(),
+        format!("{}{}\n", header, foreign.canonical_line()),
+    )
+    .unwrap();
+
+    let mut reopened = store(dir.path(), "s1");
+    // The file loads: a non-numeric id is not corruption, its CRC is its own.
+    reopened.open().unwrap();
+    let minted = reopened.mint_id().unwrap();
+    assert_ne!(
+        minted, foreign.id,
+        "the mint issued the id the foreign line holds"
+    );
+    // The reserved id lands: the counter sat at the file's low end (the
+    // parse default), and the id set the guard reads holds only the
+    // non-canonical one — no collision to refuse.
+    let appended = reopened
+        .append_entry(
+            &minted,
+            EntryKind::User,
+            serde_json::json!({"text": "mine"}),
+            None,
+        )
+        .unwrap();
+    assert_eq!(appended.id, minted);
+    assert_eq!(
+        reopened.entries_range(0, usize::MAX).unwrap().len(),
+        2,
+        "the foreign line and the minted one both stand"
+    );
 }
 
 #[test]

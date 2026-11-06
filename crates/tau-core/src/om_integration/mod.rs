@@ -33,19 +33,29 @@ pub struct BufferedChunk {
 
 /// Per-session OM state, owned by the agent loop (the loop performs no OM
 /// discovery of its own — the caller seeds this, like the system prompt).
+/// The durable record is the only copy of the buffered chunks: `buffered()`
+/// reads them from it. `buffer_cursor` is not derived from them — a promote
+/// drains a chunk from the record while the cursor keeps naming the range that
+/// run covered, the resume point the next buffer run cuts on (#408).
 #[derive(Clone, Debug)]
 pub struct OmState {
     pub config: OmConfig,
     pub record: OmRecord,
-    pub buffered: Vec<BufferedChunk>,
     /// The last entry a buffered run covered (mastra's buffer cursor, the
     /// port's `lastBufferedAtTokens`): runs are disjoint — a new buffer run
-    /// covers only entries after this one. Restored from the durable chunks on
-    /// reopen, as the chunks are, so a reopened pass keeps covering new ground
-    /// (#392).
-    buffer_cursor: Option<String>,
+    /// covers only entries after this one. Seeded on reopen from the durable
+    /// chunks' furthest end (they arrive in commit order, not id order, #402),
+    /// then carried forward by the promote and the merge.
+    pub(crate) buffer_cursor: Option<String>,
 }
-/// A config threshold as a u32: the config validates these fit a u32 at load,
+
+impl OmState {
+    /// The buffered chunks, read through to the record that owns them.
+    #[must_use]
+    pub(crate) fn buffered(&self) -> &[BufferedChunk] {
+        &self.record.buffered_chunks
+    }
+}
 /// so a mismatch is a bug, not a recoverable error.
 fn threshold_u32(v: u64) -> u32 {
     u32::try_from(v).expect("om thresholds are validated to fit a u32 at config load")
@@ -108,19 +118,16 @@ fn om_config_of(om: &crate::config::Om) -> OmConfig {
 
 impl OmState {
     /// The state a session's memory passes run with, over `record`: the record
-    /// is the single source of truth for the buffered chunks, the in-memory vec
-    /// its mirror (ticket #86 P2).
+    /// owns the buffered chunks (ticket #86 P2).
     #[must_use]
     pub fn from_config(om: &crate::config::Om, record: OmRecord) -> Self {
-        let buffered = record.buffered_chunks.clone();
         // The durable chunks mark the head of the branch they covered; a
         // reopened state that buffers from the branch head would re-cover that
         // head in one chunk (spec §4: the raw material is the unobserved tail).
-        let buffer_cursor = last_chunk_end(&buffered);
+        let buffer_cursor = last_chunk_end(&record.buffered_chunks);
         Self {
             config: om_config_of(om),
             record,
-            buffered,
             buffer_cursor,
         }
     }
@@ -183,11 +190,11 @@ impl OmState {
     /// are unioned in from the freshest file record (deduped by range), so a
     /// background cycle that committed during the pass (the bounded join timed
     /// out) is not clobbered — and vice versa. The union is over the durable
-    /// record, not the in-memory mirror: a completed cycle is always durable
-    /// (`commit_chunk` writes the file and mirrors the state under the lock), so
-    /// the mirror adds nothing and would resurrect chunks a promotion just
-    /// drained (#107). The boundary is the max; the buffer cursor rides the
-    /// largest boundary (a cycle sets its cursor and boundary together).
+    /// record: a completed cycle is always durable (`commit_chunk` writes the
+    /// file and updates the live state under the lock), so the merge would
+    /// resurrect chunks a promotion just drained (#107). The boundary is the
+    /// max; the buffer cursor rides the largest boundary (a cycle sets its
+    /// cursor and boundary together).
     /// A fresh chunk that intersects a durable range is a late re-observe of
     /// the same raw — the durable range wins and the late one is dropped, so
     /// the promote never appends one span's text twice (#402).
@@ -212,7 +219,6 @@ impl OmState {
         self.record.buffered_chunks = chunks;
         self.record.last_buffered_at_tokens = boundary;
         self.buffer_cursor = cursor;
-        self.buffered = self.record.buffered_chunks.clone();
     }
 }
 
