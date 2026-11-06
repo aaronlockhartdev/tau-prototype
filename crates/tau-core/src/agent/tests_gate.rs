@@ -28,6 +28,7 @@ fn make_agent_with_gate(
             om: None,
             om_route: crate::agent::OmRoute::Session,
             gates: Some(gates),
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .unwrap()

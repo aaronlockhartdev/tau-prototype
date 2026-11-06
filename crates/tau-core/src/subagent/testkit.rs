@@ -265,6 +265,7 @@ pub(crate) fn harness_full(
             supervisor: Arc::clone(&sup),
             provider: parent_provider,
             system_prompt: None,
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .unwrap();

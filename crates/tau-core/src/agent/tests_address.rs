@@ -32,6 +32,7 @@ fn agent_on(
             om: None,
             om_route: crate::agent::OmRoute::Session,
             gates: None,
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .unwrap()

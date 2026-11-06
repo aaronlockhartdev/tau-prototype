@@ -79,6 +79,9 @@ pub(crate) fn manual_session_om(
             om,
             om_route: crate::agent::OmRoute::Session,
             gates: None,
+            // The same flag the forwarding provider was built with: one write
+            // cuts the stream and marks the entry interrupted (#2C).
+            stop: stop.clone(),
         },
     )
     .unwrap();

@@ -17,6 +17,7 @@ pub(crate) async fn accept_tools(ctx: &Ctx) -> Result<(), String> {
             cwd: ws.path().into(),
             turn: capped(),
             gates: None,
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_batch_on_force: ToolBatchPolicy::default(),
             om: None,
             om_route: tau_core::agent::OmRoute::Session,
@@ -120,6 +121,7 @@ pub(crate) async fn accept_gate(ctx: &Ctx) -> Result<(), String> {
                 om: None,
                 om_route: tau_core::agent::OmRoute::Session,
                 gates: Some(gates),
+                stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         )
         .map_err(|e| format!("launch failed: {e:?}"))?;
@@ -275,6 +277,7 @@ pub(crate) async fn accept_subagent(ctx: &Ctx) -> Result<(), String> {
             // child's (the mock scenario matches on it), so the seam takes
             // the parent's rather than adopting it.
             system_prompt: Some(SUBAGENT_PROMPT.into()),
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .map_err(|e| format!("launch failed: {e:?}"))?;
@@ -452,6 +455,7 @@ pub(crate) async fn accept_reclaim(ctx: &Ctx) -> Result<(), String> {
             // The parent's own prompt: the "reclaim scenario parent" marker
             // routes the parent's turns to the reclaim parent fixture.
             system_prompt: Some("reclaim scenario parent. You have the tools read, write, edit, bash, and the sub-agent tools (subagent_spawn, subagent_message, subagent_stop, subagent_state). Use them as instructed.".into()),
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .map_err(|e| format!("accept-reclaim: launch failed: {e:?}"))?;
@@ -645,6 +649,7 @@ pub(crate) async fn accept_sender_labels(ctx: &Ctx) -> Result<(), String> {
                 "sender-labels parent: you are the parent; delegate with the sub-agent tools."
                     .into(),
             ),
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .map_err(|e| format!("launch failed: {e:?}"))?;
@@ -800,6 +805,7 @@ async fn accept_om_once(ctx: &Ctx) -> Result<Option<u32>, String> {
             cwd: ws.path().into(),
             turn: capped(),
             gates: None,
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_batch_on_force: ToolBatchPolicy::default(),
             om: Some(om),
             om_route: tau_core::agent::OmRoute::Session,

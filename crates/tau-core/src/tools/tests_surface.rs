@@ -78,6 +78,7 @@ fn parent_child(dir: &std::path::Path) -> (Arc<AgentSession>, Arc<Supervisor>, A
             om: None,
             om_route: crate::agent::OmRoute::Session,
             gates: None,
+            stop: Arc::new(AtomicBool::new(false)),
         },
     )
     .unwrap();
@@ -143,6 +144,7 @@ fn the_role_specs_table_is_exact() {
         supervisor: sup.clone(),
         provider: canned_provider(),
         system_prompt: None,
+        stop: Arc::new(AtomicBool::new(false)),
     };
     assert_eq!(
         names(surface::specs_for(&root_shaped, None)),
@@ -187,6 +189,7 @@ fn the_role_specs_table_is_exact() {
         om: None,
         om_route: crate::agent::OmRoute::Session,
         gates: None,
+        stop: Arc::new(AtomicBool::new(false)),
     };
     assert_eq!(
         names(surface::specs_for(&bare, None)),

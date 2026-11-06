@@ -42,6 +42,7 @@ fn gated_agent(dir: &std::path::Path, provider: Arc<ScriptedProvider>) -> Arc<Ag
             om: None,
             om_route: crate::agent::OmRoute::Session,
             gates: None,
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     )
     .unwrap()

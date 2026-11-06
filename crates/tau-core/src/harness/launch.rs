@@ -56,6 +56,9 @@ pub enum SessionRole {
         /// The parent's own prompt when it differs from the supervisor's (the
         /// supervisor's is the child's); `None` = adopt the supervisor's.
         system_prompt: Option<String>,
+        /// The session's one stop flag (#2C): minted beside the provider, so
+        /// one write reaches both cut points.
+        stop: Arc<AtomicBool>,
     },
     /// A sub-agent session: the child's link; no supervisor, no events. The
     /// values the child inherits (cwd, OM) come from the supervisor; the
@@ -97,6 +100,10 @@ pub enum SessionRole {
         om_route: OmRoute,
         /// The completion gate (spec §5.3); `None` = no gate.
         gates: Option<crate::config::Gates>,
+        /// The session's one stop flag, minted by the caller beside the
+        /// provider it builds: the seam that cuts the stream and the loop
+        /// that marks the entry interrupted read one flag (#2C).
+        stop: Arc<AtomicBool>,
     },
 }
 
@@ -123,6 +130,7 @@ impl AgentSession {
                 om,
                 om_route,
                 gates,
+                stop,
             } => {
                 // The plan file (design: session-scoped, the source of truth):
                 // seeded at start. The bare role (test kits) has no core to seed through.
@@ -131,7 +139,7 @@ impl AgentSession {
                 crate::gate::with_section(&mut system_prompt, &gates);
                 Ok(Arc::new(Self::new(SessionParams {
                     store,
-                    stop: Arc::new(AtomicBool::new(false)),
+                    stop,
                     system_prompt,
                     model,
                     tools,
@@ -233,6 +241,7 @@ impl AgentSession {
                 supervisor,
                 provider,
                 system_prompt,
+                stop,
             } => {
                 let d = supervisor.inherited();
                 let record =
@@ -252,7 +261,7 @@ impl AgentSession {
                 };
                 let agent = Arc::new(Self::new(SessionParams {
                     store,
-                    stop: Arc::new(AtomicBool::new(false)),
+                    stop,
                     system_prompt,
                     model: d.model,
                     tools: tools::surface::root_specs(),
