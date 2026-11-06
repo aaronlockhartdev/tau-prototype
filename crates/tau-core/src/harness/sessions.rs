@@ -10,7 +10,7 @@ use super::{
 use crate::agent::OmRoute;
 use crate::config::{ProviderRef, Route};
 use crate::diagnostics::Diagnostics;
-use tau_protocol::{Diagnostic, EntryKind};
+use tau_protocol::EntryKind;
 impl Core {
     /// Where a session's memory passes run (#348): `[om].om_model` resolved by
     /// §6.7 against the live config, at the endpoint its id names — prefix
@@ -315,18 +315,16 @@ impl Core {
                 .is_some_and(|(path, reason)| {
                     *path == rejection.path && *reason == rejection.reason
                 });
-            // The latch takes the pair even when the record already states it:
-            // a fresh agent's latch is born empty, and the boundary under this
-            // open must be under the record the file already carries.
-            live.agent
-                .config_rejection_changed(&rejection.path, &rejection.reason);
-            if !stated
-                && let Err(e) = live.agent.diagnostic(&Diagnostic::ConfigRejected {
-                    path: rejection.path,
-                    reason: rejection.reason,
-                })
-            {
-                tracing::warn!("record the config rejection: {e}");
+            // A break the file already states is adopted as a latch, not
+            // recorded again; the latch is taken either way, so the first
+            // boundary under this open stays quiet under the record the
+            // session already carries.
+            if stated {
+                live.agent
+                    .adopt_config_rejection(&rejection.path, &rejection.reason);
+            } else {
+                live.agent
+                    .record_config_rejection(&rejection.path, &rejection.reason);
             }
         }
         Ok(meta)

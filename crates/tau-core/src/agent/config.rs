@@ -7,6 +7,17 @@ use crate::session::{EntryEventHook, SessionStore};
 use serde_json::Value;
 use tau_protocol::{Diagnostic, EntryKind};
 
+/// The config latches' key prefix: one clear (`config_accepted`) drops every
+/// break the run has stated, so a read that succeeds makes each a new story
+/// (#359).
+const CONFIG_LATCH_PREFIX: &str = "config:";
+
+/// The config latch's key: the `(file, reason)` pair the record names, so two
+/// broken layers are two stories (#359).
+fn config_latch_key(path: &str, reason: &str) -> String {
+    format!("{CONFIG_LATCH_PREFIX}{path}:{reason}")
+}
+
 impl AgentSession {
     /// The session store's header timestamp (epoch ms).
     pub(crate) fn store_created(&self) -> u64 {
@@ -107,29 +118,42 @@ impl AgentSession {
         self.provider.set_requests(requests);
     }
 
-    /// The config a boundary read succeeded on: the latch clears, so the next
-    /// broken edit is a new story (#359).
+    /// The config a boundary read succeeded on: the config latches clear, so
+    /// the next broken edit is a new story (#359).
     pub(crate) fn config_accepted(&self) {
-        self.inner.lock().config_rejection = None;
+        self.inner.lock().clear_latches(CONFIG_LATCH_PREFIX);
     }
 
-    /// A config read that failed, by the file and what the loader said. True the
-    /// first time that pair arrives — the caller's signal to record it. The
-    /// boundary runs every turn and a broken file does not fix itself, so one
-    /// failure is stated once, not per turn, and a read that succeeds clears the
-    /// latch so a failure returning after a repair is a new story. The pair is
-    /// the key, not the reason alone: a parse failure names its file, so two
-    /// broken layers are two stories. A load rule speaks of the merged set and
-    /// names no file — the boundary files it under the project layer — so a rule
-    /// failure is stated once per session until a read succeeds (#359).
-    pub(crate) fn config_rejection_changed(&self, path: &str, reason: &str) -> bool {
-        let pair = (path.to_owned(), reason.to_owned());
-        let mut inner = self.inner.lock();
-        let fresh = inner.config_rejection.as_ref() != Some(&pair);
-        if fresh {
-            inner.config_rejection = Some(pair);
+    /// The config break this session states to its record: one record per
+    /// `(file, reason)` per run. The boundary runs every turn and a broken
+    /// file does not fix itself, so one failure is stated once, not per turn,
+    /// and a read that succeeds clears the latch so a failure returning after
+    /// a repair is a new story. The pair is the key, not the reason alone: a
+    /// parse failure names its file, so two broken layers are two stories. A
+    /// load rule speaks of the merged set and names no file — the boundary
+    /// files it under the project layer — so a rule failure is stated once per
+    /// session until a read succeeds (#359). An append that fails clears the
+    /// latch, so the next boundary retries the record (#1J) — the record is
+    /// the point of this call, so the failure is itself worth a line.
+    pub(crate) fn record_config_rejection(&self, path: &str, reason: &str) {
+        let fact = Diagnostic::ConfigRejected {
+            path: path.to_owned(),
+            reason: reason.to_owned(),
+        };
+        if let Err(e) = self
+            .inner
+            .lock()
+            .once(&config_latch_key(path, reason), &fact)
+        {
+            tracing::warn!("record the config rejection: {e}");
         }
-        fresh
+    }
+
+    /// A config break the session's file already states: the latch is taken
+    /// with no record, so the boundary under this open stays quiet under the
+    /// record the file carries (#359).
+    pub(crate) fn adopt_config_rejection(&self, path: &str, reason: &str) {
+        self.inner.lock().latch(&config_latch_key(path, reason));
     }
 
     /// The session's current turn options (spec §12, #35): what the next
@@ -176,6 +200,32 @@ impl Inner {
             .append(EntryKind::Diagnostic, fact.to_value(), parent.as_deref())
             .map(|_| ())
             .map_err(AgentError::Session)
+    }
+
+    /// The one latch-and-append (#1J): the record a `key` names is written
+    /// once per run (the #306 rule), and the latch is held only while the
+    /// record exists — an append that fails takes the key back out, so the
+    /// next pass retries the record. Every "record this once" site routes
+    /// through here, so a site cannot ship without the rollback arm.
+    pub(crate) fn once(&mut self, key: &str, fact: &Diagnostic) -> Result<(), AgentError> {
+        if !self.latches.insert(key.to_owned()) {
+            return Ok(());
+        }
+        self.record_diagnostic(fact).inspect_err(|_| {
+            self.latches.remove(key);
+        })
+    }
+
+    /// Adopt a latch with no record: the durable file already states the fact,
+    /// so this run stays quiet under the record it carries (#359).
+    pub(crate) fn latch(&mut self, key: &str) {
+        self.latches.insert(key.to_owned());
+    }
+
+    /// Drop every latch under `prefix` — the config boundary's read that
+    /// succeeded, the one rule that makes each break a new story (#359).
+    pub(crate) fn clear_latches(&mut self, prefix: &str) {
+        self.latches.retain(|key| !key.starts_with(prefix));
     }
 }
 
