@@ -361,19 +361,29 @@ export function applySubagentEvent(
     const st: SubagentState = k.state;
     const badge = badgeOf(st);
     const waitingOn = waitingOnOf(st);
-    const prev = s.subagents.find((x) => x.handle === k.handle);
+    // The row this event addresses: the handle is the core's spelling, the
+    // child is the identity. A disk-restored child's row is keyed by its
+    // session id (no live bridge to address a dead child), and re-adopt
+    // re-inserts that child at the handle its spawn record carries
+    // (reclaim.rs) — so the first state event after a re-adopt names a
+    // handle the restored row does not carry. The handle miss falls back to
+    // the child and re-points the row at the minted handle, leaving the
+    // child one address, not two.
+    const prev =
+      s.subagents.find((x) => x.handle === k.handle) ?? s.subagents.find((x) => x.child === k.child);
     if (!prev) return touchChild(sessions, sid, k.child, badge, now, waitingOn);
     // A handle is unique per child for the parent's life. If the row the
     // handle claims names a different child, the handle was re-minted (a
     // re-open): re-point the row at the event's child rather than writing
     // the new child's state onto the old child's row (ticket #226).
     const info: SubagentInfo = prev.child === k.child
-      ? { ...prev, state: st }
+      ? { ...prev, handle: k.handle, state: st }
       : { ...prev, child: k.child, state: st };
     if (st.type === 'stopped') info.resume_contract = st.resume_contract ?? null;
     if (k.note) info.last_message = k.note;
+    const rowOfEvent = (x: SubagentInfo): SubagentInfo => (x === prev ? info : x);
     return touchChild(
-      { ...sessions, [sid]: { ...s, subagents: s.subagents.map((x) => (x.handle === k.handle ? info : x)) } },
+      { ...sessions, [sid]: { ...s, subagents: s.subagents.map(rowOfEvent) } },
       sid,
       k.child,
       badge,

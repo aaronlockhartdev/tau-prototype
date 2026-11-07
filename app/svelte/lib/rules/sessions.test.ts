@@ -434,4 +434,50 @@ describe('openSession (ticket #221 restart restore)', () => {
     // the id the snapshot lists takes the snapshot's decoded value
     expect(out['s1']!.entries['e1']).toMatchObject({ id: 'e1', text: 'file preview' });
   });
+
+  // The synthesized row's handle is the child's session id (no live bridge
+  // addresses a dead child). The core mints `{parent}-{n}`, and re-adopt
+  // (reclaim.rs) re-inserts the child AT the record's minted handle, so the
+  // parent's first `state` event after a re-adopt names a handle the
+  // synthesized row does not carry. The roster is the display: it converges on
+  // the core's address (the child is the identity, the handle is its spelling).
+  it('a state event at the minted handle converges the synthesized row', () => {
+    // The disk-restored child: a stub, no live supervisor, so the open
+    // synthesizes the roster row keyed by the session id.
+    const stubbed: SessionMap = { p: makeStub(meta('p'), null, 'idle', null, 1) };
+    const opened = openSession(
+      { ...stubbed, c: makeStub(meta('c', { parent: 'p' }), 'p', 'done', null, 1) },
+      'p',
+      snap('p')
+    );
+    expect(opened['p']!.subagents).toEqual([sub('c', { state: 'done' })]);
+    // The parent addresses the cold child; the core re-opts it at its
+    // minted handle and the child's next rest arrives under that handle.
+    const out = applySubagentEvent(
+      opened,
+      'p',
+      { kind: 'state', handle: 'p-1', child: 'c', state: st({ state: 'running' }), note: null },
+      9
+    );
+    const row = out['p']!.subagents.find((x) => x.child === 'c');
+    expect(row?.state, 'the roster row keeps the child, not a stale handle').toMatchObject({ type: 'running' });
+    expect(row?.handle, 'the row carries the handle the core addresses it by').toBe('p-1');
+    // One row for the child: the old spelling is gone, not a second address.
+    expect(out['p']!.subagents.filter((x) => x.child === 'c')).toHaveLength(1);
+    expect(out['p']!.subagents.find((x) => x.handle === 'c')).toBeUndefined();
+  });
+
+  it('a state event naming no child of the parent touches no sibling row', () => {
+    // The negative bar for the same rule: the child match is scoped to the
+    // parent's rows, so a foreign child (a stub under another parent) must
+    // not claim a row it does not own (#226's shape, seen from the child side).
+    let map: SessionMap = { p: makeStub(meta('p'), null, 'idle', null, 1) };
+    map = applySubagentEvent(map, 'p', { kind: 'spawned', handle: 'p-1', child: 'c', agent_type: 'general', context_mode: 'fresh', title: 'one' }, 2);
+    // A child of another parent, sharing the id space only.
+    const out = applySubagentEvent(map, 'other', { kind: 'state', handle: 'p-1', child: 'c', state: st({ state: 'failed', reason: 'boom' }), note: null }, 3);
+    // `other` has no row at all: the event is dropped with the session.
+    expect(out['other']).toBeUndefined();
+    // The parent's row is untouched — the event was not addressed to it.
+    expect(out['p']!.subagents[0]!.state).toMatchObject({ type: 'running' });
+  });
 });
