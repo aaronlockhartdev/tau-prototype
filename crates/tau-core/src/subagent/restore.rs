@@ -14,7 +14,6 @@ use super::{ChildState, ContextMode};
 use crate::session::{Entry, SessionStore, list_workspace};
 use tau_protocol::EntryKind;
 
-use std::borrow::Cow;
 use std::path::Path;
 
 /// The head window that carries a child's spawn record (#302): a fresh or
@@ -158,42 +157,17 @@ fn state_of(record: Option<&ChildStateRecord>) -> Option<ChildState> {
 /// carrying its name, minted handle, spawn record, and last recorded
 /// state — a child whose state is not terminal (or that has none) is
 /// dropped: re-adopt is terminal-only (design §5).
-pub fn disk_children(cwd: &Path, parent: &str, parent_entries: Option<&[Entry]>) -> Vec<DiskChild> {
-    // The parent's spawn records map child session id → minted handle, so a
-    // re-adopted child keeps the exact handle the GUI and the parent model
-    // already address it by (not a synthesized session-id handle). The
-    // open path threads the parent's already-loaded entries through (issue
-    // #280); a caller without them (the `subagent_list` command, the
-    // re-adopt) re-reads the parent's file.
-    let mut handle_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    // The threaded entries are borrowed (a `Cow::Borrowed`); a caller
-    // without them re-reads the parent's file (a `Cow::Owned`).
-    let spawn_records: Cow<'_, [Entry]> = if let Some(entries) = parent_entries {
-        Cow::Borrowed(entries)
-    } else {
-        // The whole parent log by design (#302): every spawn record in the
-        // parent's history names a child, and the store has no read narrower
-        // than a position range (spec §3).
-        let mut pstore = SessionStore::for_workspace(cwd, parent);
-        Cow::Owned(
-            pstore
-                .open()
-                .and_then(|()| pstore.entries_range(0, usize::MAX))
-                .unwrap_or_default(),
-        )
-    };
-    for e in spawn_records.iter() {
-        if e.kind == EntryKind::Subagent
-            && e.payload["event"] == "spawn"
-            && let (Some(child), Some(handle)) = (
-                e.payload.get("child").and_then(|v| v.as_str()),
-                e.payload.get("handle").and_then(|v| v.as_str()),
-            )
-        {
-            handle_of.insert(child.to_owned(), handle.to_owned());
-        }
-    }
-    let mut out = Vec::new();
+///
+/// A child's minted handle rides the child's own spawn record (#1K), so this
+/// read recovers the address from the child's file: the parent's log is read
+/// by nothing here, and `parent_entries` (threaded by the open path, #280)
+/// reaches the mint seed (`minted_count`), not this projection.
+pub fn disk_children(
+    cwd: &Path,
+    parent: &str,
+    _parent_entries: Option<&[Entry]>,
+) -> Vec<DiskChild> {
+    let mut out: Vec<DiskChild> = Vec::new();
     for m in list_workspace(cwd) {
         if m.archived || m.parent.as_deref() != Some(parent) {
             continue;
@@ -219,15 +193,22 @@ pub fn disk_children(cwd: &Path, parent: &str, parent_entries: Option<&[Entry]>)
             continue;
         }
         let name = m.title.clone().unwrap_or_else(|| m.id.clone());
-        let handle = handle_of
-            .get(&m.id)
-            .cloned()
+        let spawn = spawn_record(&head, &tail);
+        // The handle the parent minted rides the child's own spawn record
+        // (#1K), so the address survives the parent's registry: a reclaimed
+        // child re-adopts at the address the GUI and the parent model address
+        // it by. A record with no handle — every file written before the
+        // field, and a hand-made log — keeps its session id, the address
+        // re-adopt has always produced for such a child.
+        let handle = spawn
+            .as_ref()
+            .and_then(|s| s.handle.clone())
             .unwrap_or_else(|| m.id.clone());
         out.push(DiskChild {
             name,
             handle,
             child: m.id,
-            spawn: spawn_record(&head, &tail),
+            spawn,
             state,
             created: m.created,
         });

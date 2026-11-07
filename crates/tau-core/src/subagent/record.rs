@@ -27,9 +27,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A child's spawn record: the agent type it was spawned as, its brief, the
-/// context it was given, and the parent link (the parent's session id and the
+/// context it was given, the parent link (the parent's session id and the
 /// originating tool call id) that is the child's durable provenance
-/// (ADR-0001).
+/// (ADR-0001), and the handle the parent minted for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnRecord {
     #[serde(rename = "type")]
@@ -38,6 +38,16 @@ pub struct SpawnRecord {
     pub context_mode: ContextMode,
     pub parent: String,
     pub call: String,
+    /// The address the parent and the GUI use for this child, minted before
+    /// the record is written (#1K): the child's own record carries it, so a
+    /// restart recovers the address from the child's file alone.
+    ///
+    /// `Option` because the record has no version field: every file written
+    /// before the field carries spawn records without it, and those keep
+    /// decoding. A record with no handle reads as the address re-adopt has
+    /// always produced for such a child — its session id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
 }
 
 /// The child's record of a note to its parent (`parent_notify`): the text,
