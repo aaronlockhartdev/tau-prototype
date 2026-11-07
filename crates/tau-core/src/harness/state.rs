@@ -3,8 +3,8 @@
 use super::{
     AgentSession, Arc, AtomicBool, AtomicU64, BTreeMap, ChildProviderFactory, Config,
     ConfigRejection, ConfigState, Duration, Event, HashMap, Lane, MessageLane, Mutex, Ordering,
-    Path, PathBuf, ProtocolError, SessionMeta, Skeleton, SkillInfo, SystemEventKind,
-    TurnProviderRef, Watcher, Weak, Workspace, config, mpsc, skill_info,
+    Path, PathBuf, ProtocolError, SessionMeta, SkillInfo, SystemEventKind, TurnProviderRef,
+    Watcher, Weak, Workspace, config, mpsc, skill_info,
 };
 
 /// The watcher's debounce window (design #30): a save burst (a temp-write
@@ -37,9 +37,6 @@ pub(crate) struct LiveSession {
     /// A child's is the provider its agent has — one object per child (#175).
     pub(crate) provider: TurnProviderRef,
     pub(crate) cwd: PathBuf,
-    /// The snapshot skeleton this session's polls reuse (#316); see
-    /// `super::Skeleton`.
-    pub(crate) skeleton: Mutex<Skeleton>,
 }
 
 /// One open workspace and everything that travels with it (#1A): a fact about a
@@ -121,11 +118,6 @@ pub struct Core {
     /// it for all. Watched non-recursively — the dir's other files
     /// (`workspaces.json`, `agents`, `skills`) are not config.
     pub(crate) system_config_watcher: Mutex<Option<Watcher>>,
-    /// The watcher-parsed plan state per session (design: the plan file is
-    /// the source of truth; this is its parse, kept fresh by the
-    /// per-workspace plan watcher). Dropped on session close — the file on
-    /// disk is the record, the cache is not.
-    pub(crate) plans: Mutex<HashMap<String, crate::plan::Plan>>,
     pub(crate) system_dir: Option<PathBuf>,
     /// The user's home dir (the home-level `.agents/skills/` root; the
     /// `system_dir` seam's sibling for tests).
@@ -149,10 +141,6 @@ pub struct Core {
     /// (None in production builds), so a test can capture the re-injected
     /// instructions through the production wiring.
     pub(crate) root_provider: Option<TurnProviderRef>,
-    /// Child handle → parent session (the spawn's record, R3): the handle
-    /// is opaque — a command carrying it resolves the parent from here,
-    /// never from the handle's format.
-    pub(crate) child_handles: Mutex<HashMap<String, String>>,
     /// Self-reference for the seams that need an `Arc<Core>` (the child
     /// driver/factory/bridge); set in `build`.
     pub(crate) self_weak: Mutex<Option<Weak<Core>>>,
@@ -274,7 +262,6 @@ impl CoreBuilder {
             }),
             home_watcher: Mutex::new(None),
             system_config_watcher: Mutex::new(None),
-            plans: Mutex::new(HashMap::new()),
             system_dir: self.system_dir.clone(),
             home: self.home.clone(),
             custom: self.custom,
@@ -295,7 +282,6 @@ impl CoreBuilder {
             events_rx: Mutex::new(Some(rx)),
             child_factory: self.child_factory.clone(),
             root_provider: self.root_provider.clone(),
-            child_handles: Mutex::new(HashMap::new()),
         });
         core.self_weak.lock().replace(Arc::downgrade(&core));
         self.apply_startup(&core)?;
@@ -617,18 +603,6 @@ impl Core {
         });
         skills
     }
-
-    /// The open workspace whose cwd is `path` (the plan event's routing);
-    /// `None` when the cwd names no open workspace (a close racing the
-    /// watcher) — the parse is cached either way.
-    fn workspace_id_for_cwd(&self, cwd: &Path) -> Option<String> {
-        self.workspaces
-            .lock()
-            .values()
-            .find(|state| Path::new(&state.workspace.cwd) == cwd)
-            .map(|state| state.workspace.id.clone())
-    }
-
     fn load_workspace_index(&self) -> Vec<WorkspaceIndexEntry> {
         let Some(dir) = &self.system_dir else {
             return Vec::new();
@@ -689,52 +663,6 @@ impl Core {
         // go together.
         self.configs.lock().remove(id);
         Ok(())
-    }
-
-    /// The session's current plan state, rendered for injection (the
-    /// watcher-parsed state of the plan file); `None` until the first
-    /// observation.
-    pub(crate) fn plan_state(&self, session: &str) -> Option<String> {
-        self.plans.lock().get(session).map(crate::plan::render)
-    }
-
-    /// Re-read and parse the session's plan file into the state cache: the
-    /// plan watcher's consumer, and the session-start seed. A failed read
-    /// (a torn write, a delete) degrades to an empty plan — the parser is
-    /// total, so nothing here can fail a turn. A changed parse is emitted as
-    /// a `plan_changed` (the GUI's plan pane, spec §5.3) when the cwd names
-    /// an open workspace — and only when the parse actually changed: an
-    /// editor saving unchanged content must not churn the UI (#177).
-    /// `silent` seeds the cache without emitting: the session-open path must
-    /// warm the cache for the first assembly, but the seed is not a change —
-    /// emitting it made a plain open advance the sidebar's last-modified.
-    pub(crate) fn refresh_plan(&self, workspace: &Path, session_id: &str, silent: bool) {
-        let raw =
-            std::fs::read_to_string(crate::plan::path(workspace, session_id)).unwrap_or_default();
-        let plan = crate::plan::parse(&raw);
-        let done = plan.done_count();
-        let total = plan.steps.len();
-        let changed = self
-            .plans
-            .lock()
-            .insert(session_id.to_owned(), plan.clone())
-            .is_none_or(|prev| prev != plan);
-        tracing::info!(
-            session = %session_id,
-            done,
-            total,
-            "plan state observed"
-        );
-        if silent || !changed {
-            return;
-        }
-        if let Some(id) = self.workspace_id_for_cwd(workspace) {
-            self.emit(Event::PlanChanged {
-                workspace: id,
-                session: session_id.to_owned(),
-                plan: plan.into(),
-            });
-        }
     }
 
     /// The project layer's directory: where a workspace's own config file lives.
@@ -918,19 +846,28 @@ impl Core {
             })
     }
 
-    /// Record a spawn's handle→parent (the handle is opaque: the registry
-    /// is the record of which parent minted it, R3).
-    pub(crate) fn register_child_handle(&self, handle: &str, parent: &str) {
-        self.child_handles
-            .lock()
-            .insert(handle.to_owned(), parent.to_owned());
-    }
-
-    /// The parent that minted a child handle (the spawn registry, R3).
+    /// The parent that minted a child handle (R3: the handle is opaque, so
+    /// it is resolved by the relation, never by the handle's format). The
+    /// live child session knows its parent (`child_link`); a child that is
+    /// gone from the sessions map is still named by its parent's supervisor
+    /// registry, which keeps a closed child's entry and is the one the
+    /// re-adopt re-fills after a reclamation (#250).
     pub(crate) fn child_parent(&self, handle: &str) -> Option<String> {
-        self.child_handles.lock().get(handle).cloned()
+        let sessions = self.sessions.lock();
+        for (id, live) in sessions.iter() {
+            if let Some(link) = live.agent.child_link()
+                && link.handle() == handle
+            {
+                return Some(link.parent_session().to_owned());
+            }
+            if let Some(sup) = live.agent.subagents()
+                && sup.handles().iter().any(|h| h == handle)
+            {
+                return Some(id.clone());
+            }
+        }
+        None
     }
-
     /// The write refusal for an archived session (ADR-0005): its live
     /// file is gone, so an append would recreate it headerless (the
     /// restore would then refuse it) — every write command checks this

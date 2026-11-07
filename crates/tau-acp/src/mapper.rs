@@ -1,10 +1,11 @@
 //! The event → ACP `session/update` mapping (research doc §3.4):
 //! snapshot-diffed text/thought chunks and the tool call's phase. The only
-//! stateful piece is the per-entry last-sent length; provider calls are
-//! strictly sequential per session, so in-flight assistant entries are a
-//! FIFO and `StreamEnd` finalizes the oldest.
+//! stateful piece is the progress of the assistant entries the client is
+//! following; `StreamEnd` closes the turn (issue #82) by dropping that progress
+//! whole, so an entry seen again after its turn closed (the journal-resync case)
+//! is a fresh run from its record.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use serde_json::{Value, json};
 use tau_protocol::EntryKind;
@@ -15,22 +16,26 @@ const TITLE_CAP: usize = 80;
 
 #[derive(Default)]
 pub struct Mapper {
-    text_sent: HashMap<String, usize>,
-    reasoning_sent: HashMap<String, usize>,
-    /// The last delta seq applied per entry (#303): a frame applies only as the
-    /// next one, so the sent-counters above stay aligned with the characters
-    /// the client holds — the entry's file line is diffed against them.
-    delta_seq: HashMap<String, u64>,
-    in_flight: VecDeque<String>,
-    in_flight_set: HashSet<String>,
-    /// Entries `on_stream_end` has finalized; a re-upsert of one of these
-    /// (the journal-resync case) resumes it at the front of the queue.
-    finalized: HashSet<String>,
+    /// The assistant entries the client is following, one progress record each.
+    progress: HashMap<String, EntryProgress>,
     /// The phase the client's card for a tool call last heard, per id. The
     /// core's tool lane is full-state-per-frame, so the same phase re-arrives
     /// (a repeated snapshot, a coalesced streaming frame, the post-turn
     /// re-emit) and owes nothing then; a phase *change* always rides out.
+    /// The card outlives the turn, so `StreamEnd` leaves this map alone.
     tool_phase: HashMap<String, &'static str>,
+}
+
+/// What the client holds of one assistant entry: the characters sent per field,
+/// which the entry's file line is diffed against, and the last delta seq
+/// applied (#303) — a frame applies only as the next one, keeping the counters
+/// aligned with the text the client holds. A fresh record is the client holding
+/// nothing; an entry is in flight while it has a record here.
+#[derive(Default)]
+struct EntryProgress {
+    text_sent: usize,
+    reasoning_sent: usize,
+    delta_seq: u64,
 }
 
 impl Mapper {
@@ -67,22 +72,22 @@ impl Mapper {
     /// out-of-order frame would leave a hole the record cannot see, because its
     /// diff starts where the text the client holds ends.
     pub fn on_delta(&mut self, id: &str, seq: u64, text: &str, reasoning: &str) -> Vec<Value> {
-        let next = self.delta_seq.get(id).map_or(1, |&last| last + 1);
+        let next = self.progress.get(id).map_or(1, |held| held.delta_seq + 1);
         if seq != next {
             return Vec::new();
         }
-        self.delta_seq.insert(id.to_owned(), seq);
-        self.track_assistant(id);
+        let held = self.progress.entry(id.to_owned()).or_default();
+        held.delta_seq = seq;
         let mut out = Vec::new();
         for (sent, chunk, variant) in [
-            (&mut self.text_sent, text, "agent_message_chunk"),
-            (&mut self.reasoning_sent, reasoning, "agent_thought_chunk"),
+            (&mut held.text_sent, text, "agent_message_chunk"),
+            (&mut held.reasoning_sent, reasoning, "agent_thought_chunk"),
         ] {
             let chars = chunk.chars().count();
             if chars == 0 {
                 continue;
             }
-            *sent.entry(id.to_owned()).or_insert(0) += chars;
+            *sent += chars;
             out.push(json!({
                 "sessionUpdate": variant,
                 "content": { "type": "text", "text": chunk },
@@ -90,24 +95,6 @@ impl Mapper {
             }));
         }
         out
-    }
-
-    /// The in-flight bookkeeping for an assistant entry seen for the first
-    /// time, shared by the deltas and the entry's file line.
-    fn track_assistant(&mut self, id: &str) {
-        if !self.in_flight_set.contains(id) {
-            self.in_flight_set.insert(id.to_owned());
-            // A resumed (previously finalized) entry is the current call
-            // again: newest in the finalize queue. A fresh entry is the
-            // oldest not yet finalized.
-            if self.finalized.contains(id) {
-                self.in_flight.push_front(id.to_owned());
-            } else {
-                self.in_flight.push_back(id.to_owned());
-            }
-            self.text_sent.insert(id.to_owned(), 0);
-            self.reasoning_sent.insert(id.to_owned(), 0);
-        }
     }
 
     fn on_user(entry: &ViewEntry) -> Vec<Value> {
@@ -127,42 +114,38 @@ impl Mapper {
     }
 
     /// Finalize every in-flight entry: the turn-settled `StreamEnd` (issue
-    /// #82) closes the whole turn — all of its calls — not just the last.
+    /// #82) closes the whole turn — all of its calls — not just the last. What
+    /// the client holds of a closed entry is dropped, so its next upsert (the
+    /// journal-resync case) owes the record's whole text and its seq gate
+    /// restarts at 1.
     pub fn on_stream_end(&mut self) {
-        while let Some(id) = self.in_flight.pop_front() {
-            self.in_flight_set.remove(&id);
-            self.finalized.insert(id.clone());
-            self.text_sent.remove(&id);
-            self.reasoning_sent.remove(&id);
-            self.delta_seq.remove(&id);
-        }
+        self.progress.clear();
     }
 
     fn on_assistant(&mut self, entry: &ViewEntry) -> Vec<Value> {
         let Some(EntryPayload::Assistant(payload)) = entry.payload.as_deref() else {
             return Vec::new();
         };
-        self.track_assistant(&entry.id);
+        let held = self.progress.entry(entry.id.clone()).or_default();
         let mut out = Vec::new();
         for (sent, text, variant) in [
             (
-                &mut self.text_sent,
+                &mut held.text_sent,
                 payload.text.as_str(),
                 "agent_message_chunk",
             ),
             (
-                &mut self.reasoning_sent,
+                &mut held.reasoning_sent,
                 payload.reasoning.as_str(),
                 "agent_thought_chunk",
             ),
         ] {
-            let sent_chars = sent.get(&entry.id).copied().unwrap_or(0);
             let chars = text.chars().count();
-            if chars > sent_chars {
+            if chars > *sent {
                 // Char-offset safe: snapshots re-emit the whole growing
                 // text, the delta is its suffix.
-                let delta: String = text.chars().skip(sent_chars).collect();
-                sent.insert(entry.id.clone(), chars);
+                let delta: String = text.chars().skip(*sent).collect();
+                *sent = chars;
                 out.push(json!({
                     "sessionUpdate": variant,
                     "content": { "type": "text", "text": delta },
@@ -463,12 +446,40 @@ mod tests {
         // The turn-settled `StreamEnd` (issue #82) closes the whole turn:
         // every in-flight entry finalizes at once.
         m.on_stream_end();
-        // A resumed (finalized) entry is the current call again: a fresh
-        // message with the full text, newest in the finalize queue.
+        // A closed entry seen again is the current call again: a fresh
+        // message with the full text.
         let out = m.on_entry(&entry("e1", "assistant", &json!({ "text": "ab" })));
         assert_eq!(out[0]["content"]["text"], "ab");
         let out = m.on_entry(&entry("e2", "assistant", &json!({ "text": "b" })));
         assert_eq!(out[0]["content"]["text"], "b");
+    }
+
+    /// `StreamEnd` drops what the client holds of a closed entry: its record's
+    /// text is owed again, and the delta seq gate restarts at 1 — a frame of
+    /// the closed run, arriving late, is out of order and owes nothing.
+    #[test]
+    fn stream_end_restarts_a_closed_entry_at_the_record_and_the_seq() {
+        let mut m = Mapper::default();
+        m.on_delta("e1", 1, "one", "");
+        m.on_stream_end();
+        assert_eq!(
+            m.on_entry(&entry("e1", "assistant", &json!({ "text": "one" })))[0]["content"]["text"],
+            "one",
+            "a closed entry's text is owed again once it is live"
+        );
+        assert!(
+            m.on_delta("e1", 2, " two", "").is_empty(),
+            "the seq gate restarted, so the closed run's next frame is out of order"
+        );
+        assert_eq!(
+            m.on_delta("e1", 1, " one", "")[0]["content"]["text"],
+            " one",
+            "a new run of the entry starts its seq at 1"
+        );
+        assert!(
+            m.on_delta("e1", 1, " one", "").is_empty(),
+            "a frame the new run already applied owes nothing"
+        );
     }
 
     #[test]

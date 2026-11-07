@@ -329,11 +329,11 @@ pub(crate) type OmStatusHook = Arc<dyn Fn(OmStatusKind) + Send + Sync>;
 /// consumed): the app re-emits the queue snapshot so the GUI's queue pane
 /// doesn't stay stale until the turn boundary.
 pub(crate) type QueueEventHook = Arc<dyn Fn() + Send + Sync>;
-/// The plan-state reader (design: the plan file is the source of truth):
-/// the harness wires it to the core's watcher-parsed state; it returns
-/// the rendered current state, or `None` when the session has no
-/// observed plan state yet.
-pub(crate) type PlanStateHook = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// The plan-state observer (design: the plan file is the source of truth):
+/// the harness wires it to the event channel, and the agent calls it with
+/// each parse that differs from the one before — a watcher fire on identical
+/// bytes reaches no listener (#177).
+pub(crate) type PlanObserver = Arc<dyn Fn(crate::plan::Plan) + Send + Sync>;
 pub(crate) struct Inner {
     pub(crate) store: SessionStore,
     system_prompt: String,
@@ -393,9 +393,13 @@ pub(crate) struct Inner {
     /// Fired when the lane queue changes mid-turn (steering/force consumed)
     /// so the app can re-emit the queue snapshot (the GUI's queue pane).
     queue_event_hook: Option<QueueEventHook>,
-    /// The plan-state reader (design: re-injected at each turn boundary
-    /// and after compaction); `None` = no plan wiring (test kits, seams).
-    plan_hook: Option<PlanStateHook>,
+    /// The plan state this session observed (the plan file's parse),
+    /// re-injected at each turn boundary and after compaction; `None` until
+    /// the session-start observation primes it.
+    plan: Option<crate::plan::Plan>,
+    /// The change emitter (the harness's `plan_changed` event); `None` = no
+    /// listener (the core-less test seams).
+    plan_observer: Option<PlanObserver>,
     /// The parent-side supervisor (ticket #23): present on non-child
     /// sessions only — the depth cap (a child cannot spawn) is structural.
     subagents: Option<Arc<crate::subagent::Supervisor>>,
@@ -541,7 +545,8 @@ impl AgentSession {
                 entry_upsert_hook: None,
                 stream_delta_hook: None,
                 queue_event_hook: None,
-                plan_hook: None,
+                plan: None,
+                plan_observer: None,
                 subagents: p.subagents,
                 child: p.child,
                 anchors: Arc::new(parking_lot::Mutex::new(anchor_registry)),
@@ -626,6 +631,7 @@ impl AgentSession {
 }
 mod config;
 mod gate_hook;
+mod plan;
 mod queue;
 mod turn;
 

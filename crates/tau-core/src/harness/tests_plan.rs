@@ -106,9 +106,9 @@ async fn session_new_seeds_the_plan_file_and_injects_its_path() {
         "the prompt names the plan file: {prompt}"
     );
     // The initial state is the parsed skeleton: no steps yet, the invite
-    // line folded into notes.
+    // line folded into notes. The session observed its own file at open.
     assert_eq!(
-        core.plan_state(&meta.id).as_deref(),
+        live.agent.plan_state().as_deref(),
         Some(
             "# Current plan state\n\n## Notes\nMulti-step work: list its steps here before starting."
         )
@@ -172,10 +172,11 @@ async fn a_plan_file_change_updates_the_plan_state() {
     )
     .unwrap();
 
-    // The watcher re-reads and parses; the state carries the change.
+    // The watcher makes the session re-read its own file; the state carries
+    // the change.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let state = core.plan_state(&meta.id);
+        let state = core.live(&meta.id).unwrap().agent.plan_state();
         let updated = state
             .as_deref()
             .is_some_and(|s| s.contains("- [x] done step") && s.contains("build passes"));
@@ -407,19 +408,17 @@ async fn an_unchanged_refresh_emits_no_plan_changed() {
             })
             .count()
     };
-    // The session-open seed is silent: it warms the cache without
+    // The session-open observation is silent: it primes the state without
     // emitting. Poll a beat so a stray emit would be caught.
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(count(), 0, "the session-open seed emits nothing");
+    assert_eq!(count(), 0, "the session-open observation emits nothing");
 
-    // A new state emits — poll until the watcher (or our refresh below)
-    // has observed it.
-    // A new state emits — poll until the watcher (or our refresh below)
-    // has observed it.
+    // A new state emits — poll until the watcher (or our observation below)
+    // has seen it.
     std::fs::write(crate::plan::path(&cwd, &meta.id), "## Steps\n- [ ] a\n").unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while count() < 1 {
-        core.refresh_plan(Path::new(&cwd), &meta.id, false);
+        core.live(&meta.id).unwrap().agent.observe_plan();
         assert!(
             tokio::time::Instant::now() < deadline,
             "the changed state was never observed"
@@ -430,7 +429,7 @@ async fn an_unchanged_refresh_emits_no_plan_changed() {
 
     // ...and an identical re-read (a watcher fire on unchanged bytes)
     // is a no-op.
-    core.refresh_plan(Path::new(&cwd), &meta.id, false);
+    core.live(&meta.id).unwrap().agent.observe_plan();
     assert_eq!(count(), 1, "an unchanged re-read emits nothing");
 }
 
@@ -448,17 +447,6 @@ async fn the_plan_state_is_reinjected_into_the_assembly() {
     let seen = provider.seen.clone();
     let live = manual_session(&core, &workspace, provider, TurnConfig::default());
     let sid = live.meta.lock().id.clone();
-
-    // The production shape: the core's watcher-parsed state.
-    let core_weak = Arc::downgrade(&core);
-    let hook_sid = sid.clone();
-    live.agent.set_plan_hook(Some(Arc::new(move || {
-        core_weak
-            .upgrade()
-            .and_then(|core| core.plan_state(&hook_sid))
-    })));
-    // The session-start observation: the seeded skeleton.
-    core.refresh_plan(Path::new(&workspace.cwd), &sid, false);
 
     core.dispatch(Command::MessageSend {
         session: sid.clone(),
@@ -493,14 +481,6 @@ async fn a_plan_change_between_turns_changes_the_injected_state() {
     let seen = provider.seen.clone();
     let live = manual_session(&core, &workspace, provider, TurnConfig::default());
     let sid = live.meta.lock().id.clone();
-    let core_weak = Arc::downgrade(&core);
-    let hook_sid = sid.clone();
-    live.agent.set_plan_hook(Some(Arc::new(move || {
-        core_weak
-            .upgrade()
-            .and_then(|core| core.plan_state(&hook_sid))
-    })));
-    core.refresh_plan(Path::new(&workspace.cwd), &sid, false);
     let plan_file = crate::plan::path(&cwd, &sid);
 
     // Turn 1: the seeded skeleton (no steps).
@@ -516,12 +496,13 @@ async fn a_plan_change_between_turns_changes_the_injected_state() {
         .expect("the first request carries instructions");
     assert!(!first.contains("done step"), "turn 1: {first}");
 
-    // The model edits the plan; the watcher refreshes the state.
+    // The model edits the plan; the watcher makes the session re-read it.
     std::fs::write(&plan_file, "## Steps\n- [x] done step\n").unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let updated = core
-            .plan_state(&sid)
+        let updated = live
+            .agent
+            .plan_state()
             .as_deref()
             .is_some_and(|s| s.contains("done step"));
         if updated {
@@ -561,15 +542,21 @@ async fn closing_a_session_drops_its_plan_state() {
     let core = CoreBuilder::custom(providers()).build().unwrap();
     let workspace = open_ws(&core, &cwd).await;
     let meta = new_root_session(&core, &workspace);
-    assert!(core.plan_state(&meta.id).is_some());
+    assert!(core.live(&meta.id).unwrap().agent.plan().is_some());
 
     core.dispatch(Command::SessionClose {
         session: meta.id.clone(),
     })
     .unwrap();
+    // The state is the session's, so closing the session drops it: the
+    // session is gone from the registry, and the file stays the record.
     assert!(
-        core.plan_state(&meta.id).is_none(),
-        "a closed session keeps no plan state"
+        matches!(core.live(&meta.id), Err(ProtocolError::NotFound { .. })),
+        "a closed session keeps no plan state: no session, no state"
+    );
+    assert!(
+        crate::plan::path(&cwd, &meta.id).is_file(),
+        "the plan file is the record a re-open reads"
     );
 }
 
@@ -609,9 +596,8 @@ async fn a_spawned_child_prompt_names_its_own_plan_file() {
         "the parent's path is replaced: {prompt}"
     );
     // The child's state is observed at spawn.
-    assert!(core.plan_state(&spawned.session_id).is_some());
+    assert!(spawned.agent.plan().is_some());
 }
-
 /// B1: the section replacement is section-scoped, so a child in a
 /// skills-bearing workspace keeps the inherited skills catalog — the
 /// catalog is the layer after the plan section, not part of it.

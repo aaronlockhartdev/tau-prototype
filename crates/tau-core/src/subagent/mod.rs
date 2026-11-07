@@ -23,8 +23,8 @@ use std::sync::{Arc, Weak};
 use tau_protocol::payload::{ResumeContract, TurnUsage};
 
 pub use bridge::{
-    BoxedDrive, ChildDriver, ChildProviderFactory, ReadoptNotice, ReclaimNotice, SpawnNotice,
-    StateNotice, SubagentBridge, WakeKind, WakeNotice,
+    BoxedDrive, ChildDriver, ChildProviderFactory, SpawnNotice, StateNotice, SubagentBridge,
+    WakeKind, WakeNotice,
 };
 pub use child::Child;
 pub use link::ChildLink;

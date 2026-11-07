@@ -421,25 +421,31 @@ pub(crate) fn spawn_watcher_consumer(
 }
 
 /// A batch's plan updates (design: the watcher is the parser's only call
-/// site): each changed `.md` under the workspace's plans dir re-reads that
-/// session's plan file. An empty batch is a rescan trigger (the design's
-/// lost-events case) — every plan file in the dir is re-read, so a lost
-/// event self-heals on the next rescan.
+/// site): each changed `.md` under the workspace's plans dir makes the
+/// session it names re-read its plan file. An empty batch is a rescan
+/// trigger (the design's lost-events case) — every plan file in the dir is
+/// re-read, so a lost event self-heals on the next rescan. A plan naming no
+/// open session is skipped: a closed session keeps no plan state, its file
+/// is the record.
 pub(crate) fn refresh_plan_batch(core: &Core, ws: &Workspace, batch: &Batch) {
     let cwd = Path::new(&ws.cwd);
-    if batch.is_empty() {
-        if let Ok(rd) = std::fs::read_dir(cwd.join(".tau").join("plans")) {
-            for ent in rd.flatten() {
-                if let Some(sid) = crate::plan::session_of(&ent.path(), cwd) {
-                    core.refresh_plan(cwd, &sid, false);
-                }
-            }
-        }
-        return;
-    }
-    for path in batch {
-        if let Some(sid) = crate::plan::session_of(path, cwd) {
-            core.refresh_plan(cwd, &sid, false);
+    let sids: Vec<String> = if batch.is_empty() {
+        std::fs::read_dir(cwd.join(".tau").join("plans"))
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|ent| crate::plan::session_of(&ent.path(), cwd))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        batch
+            .iter()
+            .filter_map(|path| crate::plan::session_of(path, cwd))
+            .collect()
+    };
+    for sid in sids {
+        if let Ok(live) = core.live(&sid) {
+            live.agent.observe_plan();
         }
     }
 }
@@ -467,7 +473,6 @@ impl Drop for Core {
         // One clear stops every workspace's watchers: each is a field of the
         // workspace's state, and a `Watcher`'s drop joins its debouncer.
         self.workspaces.lock().clear();
-        self.plans.lock().clear();
     }
 }
 

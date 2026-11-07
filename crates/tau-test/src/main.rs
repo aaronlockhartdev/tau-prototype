@@ -26,8 +26,8 @@ use tau_core::om_integration::OmState;
 use tau_core::provider;
 use tau_core::session::{Entry, SessionStore};
 use tau_core::subagent::{
-    BoxedDrive, ChildDriver, ChildProviderFactory, ChildState, ReadoptNotice, ReclaimNotice,
-    SpawnNotice, StateNotice, SubagentBridge, Supervisor, SupervisorParams, WakeNotice,
+    BoxedDrive, ChildDriver, ChildProviderFactory, ChildState, SpawnNotice, StateNotice,
+    SubagentBridge, Supervisor, SupervisorParams, WakeNotice,
 };
 use tau_core::tools;
 use tau_mock_llm::server::MODEL_ID;

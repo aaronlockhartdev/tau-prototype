@@ -4,7 +4,7 @@ use super::thinking::thinking_adjusted_max_output;
 use super::{
     AgentSession, Arc, AtomicBool, Config, Core, ForwardingProvider, LiveSession, MAX_TITLE_LEN,
     ModelAddress, Mutex, Ordering, Path, PathBuf, ProtocolError, SessionMeta, SessionRole,
-    SessionStore, Skeleton, TurnConfig, Value, ViewEntry, Workspace, om_route_for, session_inner,
+    SessionStore, TurnConfig, Value, ViewEntry, Workspace, om_route_for, session_inner,
     session_name, session_open, unique_name,
 };
 use crate::agent::OmRoute;
@@ -298,7 +298,6 @@ impl Core {
             turn: AtomicBool::new(false),
             provider,
             cwd: PathBuf::from(&workspace.cwd),
-            skeleton: Mutex::new(Skeleton::default()),
         });
         let id = live.meta.lock().id.clone();
         self.sessions.lock().insert(id.clone(), live.clone());

@@ -484,15 +484,6 @@ impl AgentSession {
         }
     }
 
-    /// The watcher-parsed plan state (design: the plan file is the source of
-    /// truth), read under the session lock. Captured once per turn and
-    /// re-captured after a mid-turn compaction — the re-injection points —
-    /// not on every assembly, so a mid-turn plan-file edit can't churn the
-    /// provider prefix cache for the rest of the turn.
-    fn plan_state(&self) -> Option<String> {
-        self.inner.lock().plan_hook.as_ref().and_then(|h| h())
-    }
-
     fn append_user(&self, msg: Queued) -> Result<(), AgentError> {
         let skill = msg
             .skill

@@ -3,10 +3,9 @@
 use super::{
     AgentSession, Arc, AtomicBool, AtomicU64, BoxedDrive, ChildDriver, ChildProviderFactory,
     Config, ContextMode, Core, Duration, Event, LiveSession, Mutex, Ordering, PipeCounters,
-    ProviderTurn, ReadoptNotice, ReclaimNotice, ResponseRequest, SessionMeta, Skeleton, SkillInfo,
-    SpawnNotice, StateNotice, SubagentBridge, SubagentEventKind, SubagentInfo, TurnEvent,
-    TurnProvider, TurnProviderRef, TurnSink, Usage, WakeKind, WakeNotice, Weak, mpsc, pipe_send,
-    provider, run_turn,
+    ProviderTurn, ResponseRequest, SessionMeta, SkillInfo, SpawnNotice, StateNotice,
+    SubagentBridge, SubagentEventKind, SubagentInfo, TurnEvent, TurnProvider, TurnProviderRef,
+    TurnSink, Usage, WakeKind, WakeNotice, Weak, mpsc, pipe_send, provider, run_turn,
 };
 use crate::config::ProviderRef;
 use std::future::Future;
@@ -335,10 +334,6 @@ pub(crate) struct SessionSubagentBridge {
 }
 impl SubagentBridge for SessionSubagentBridge {
     fn spawned(&self, n: &SpawnNotice) {
-        // The handle is opaque (R3): record which parent minted it — the
-        // GUI's handle-carrying commands resolve the parent from the
-        // registry, never from the handle's format.
-        self.core.register_child_handle(&n.handle, &n.parent);
         // The spawn minted the title into the child's header and carried it on
         // the notice, so the GUI's stub gets the real name.
         self.core.emit(Event::SubagentEvent {
@@ -377,23 +372,9 @@ impl SubagentBridge for SessionSubagentBridge {
             turn: AtomicBool::new(false),
             provider: n.provider.clone(),
             cwd: n.cwd.clone(),
-            skeleton: Mutex::new(Skeleton::default()),
         });
         let id = live.meta.lock().id.clone();
         self.core.sessions.lock().insert(id, live);
-    }
-
-    fn reclaimed(&self, n: &ReclaimNotice) {
-        // The handle is gone from the supervisor's map: drop the mint record
-        // (the session file and the child's live session stay, #250).
-        self.core.child_handles.lock().remove(&n.handle);
-    }
-
-    fn re_adopted(&self, n: &ReadoptNotice) {
-        // The re-adopt re-minted an existing handle: re-record the parent
-        // (the reclamation dropped it), so handle-carrying commands resolve
-        // it again.
-        self.core.register_child_handle(&n.handle, &n.parent);
     }
 
     fn state(&self, n: &StateNotice) {

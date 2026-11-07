@@ -66,10 +66,6 @@ pub struct SessionStore {
     /// whether it has a mirror to serve from, and a mirror read carries the
     /// length it is valid at.
     log: Option<Loaded>,
-    /// The load generation: `open` bumps it, so a caller's cache of loaded-log
-    /// rows can tell one file from the next under the same session id
-    /// (`Skeleton`'s identity, #316).
-    load_seq: u64,
     /// A live entry sink (the app maps each appended entry to a protocol
     /// event). Set by the owning session; `None` for stores with no live
     /// surface. Fired at the append choke point so every write path — the
@@ -141,7 +137,6 @@ impl SessionStore {
             title: None,
             parent: None,
             log: None,
-            load_seq: 0,
             entry_event_hook: None,
         }
     }
@@ -279,9 +274,8 @@ impl SessionStore {
     /// leaves the store with no mirror, so the failed read that follows it
     /// reaches no rows.
     pub fn open(&mut self) -> Result<(), Error> {
-        self.load_seq += 1;
-        // A store mid-open has no mirror: the load generation moved, and the
-        // rows the old one held describe the file this open has not read.
+        // A store mid-open has no mirror: the rows the old one held describe
+        // the file this open has not read, and they go with it (#1F).
         self.log = None;
         let raw = fs::read_to_string(self.path()).map_err(|e| Error::Other(e.to_string()))?;
         let mut log =
