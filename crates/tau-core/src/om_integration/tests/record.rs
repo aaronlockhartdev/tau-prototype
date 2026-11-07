@@ -435,4 +435,67 @@ fn range_overlap_reads_numeric_spans_and_falls_back_to_equality() {
     assert!(ranges_overlap(&r("e1", "e1"), &r("e1", "e1")));
     assert!(!ranges_overlap(&r("e1", "e1"), &r("e2", "e2")));
     assert!(!ranges_overlap(&r("e1", "e1"), &r("00000001", "00000002")));
+    assert!(!ranges_overlap(&r("e1", "e1"), &r("00000001", "00000002")));
+}
+
+/// The disk contract `BufferedChunk.range` ships in: a JSON 2-tuple of `{:08}`
+/// entry-id strings, inside `OmRecord.buffered_chunks`. `OmRecord` has no
+/// version field — only `#[serde(default)]` tolerance — so a shape change
+/// reads back as an absence (an empty chunk list: the raw re-observes) rather
+/// than an error. This is the pin that names the shape.
+#[test]
+fn a_durable_record_carries_a_chunk_range_as_a_pair_of_padded_id_strings() {
+    let on_disk = serde_json::json!({
+        "buffered_chunks": [{
+            "range": ["00000001", "00000009"],
+            "last_ts": 100,
+            "text": "observed the head",
+            "tokens": 120
+        }]
+    });
+    let record: OmRecord = serde_json::from_value(on_disk.clone()).unwrap();
+    assert_eq!(record.buffered_chunks.len(), 1);
+    assert_eq!(
+        record.buffered_chunks[0].range,
+        ("00000001".into(), "00000009".into())
+    );
+    let written = serde_json::to_value(&record).unwrap();
+    assert_eq!(
+        written["buffered_chunks"][0]["range"],
+        serde_json::json!(["00000001", "00000009"]),
+        "the range no longer writes as the 2-tuple the file holds"
+    );
+    // The shape is strict: a range written as an object is a hard decode
+    // failure, never a silent empty chunk list.
+    let reshaped = serde_json::json!({
+        "buffered_chunks": [{
+            "range": { "first": "00000001", "last": "00000009" },
+            "last_ts": 100,
+            "text": "observed the head",
+            "tokens": 120
+        }]
+    });
+    assert!(
+        serde_json::from_value::<OmRecord>(reshaped).is_err(),
+        "a range that is not a 2-tuple decoded"
+    );
+}
+
+#[test]
+fn a_chunk_range_round_trips_through_the_session_file() {
+    // The same contract one level up: the record a session file carries, read
+    // back through the loader a reopen uses.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = SessionStore::for_workspace(dir.path(), "s1");
+    store.create().unwrap();
+    let mut state = OmState::from_config(
+        &crate::config::Om::default(),
+        OmRecord {
+            buffered_chunks: vec![span("00000001", "00000009")],
+            ..Default::default()
+        },
+    );
+    state.save(&mut store).unwrap();
+    let loaded = OmState::load_record(&mut store).unwrap();
+    assert_eq!(loaded.buffered_chunks, state.record.buffered_chunks);
 }
