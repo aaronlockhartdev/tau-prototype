@@ -146,10 +146,6 @@ pub struct Core {
     /// (None in production builds), so a test can capture the re-injected
     /// instructions through the production wiring.
     pub(crate) root_provider: Option<TurnProviderRef>,
-    /// Child handle → parent session (the spawn's record, R3): the handle
-    /// is opaque — a command carrying it resolves the parent from here,
-    /// never from the handle's format.
-    pub(crate) child_handles: Mutex<HashMap<String, String>>,
     /// Self-reference for the seams that need an `Arc<Core>` (the child
     /// driver/factory/bridge); set in `build`.
     pub(crate) self_weak: Mutex<Option<Weak<Core>>>,
@@ -292,7 +288,6 @@ impl CoreBuilder {
             events_rx: Mutex::new(Some(rx)),
             child_factory: self.child_factory.clone(),
             root_provider: self.root_provider.clone(),
-            child_handles: Mutex::new(HashMap::new()),
         });
         core.self_weak.lock().replace(Arc::downgrade(&core));
         self.apply_startup(&core)?;
@@ -915,19 +910,28 @@ impl Core {
             })
     }
 
-    /// Record a spawn's handle→parent (the handle is opaque: the registry
-    /// is the record of which parent minted it, R3).
-    pub(crate) fn register_child_handle(&self, handle: &str, parent: &str) {
-        self.child_handles
-            .lock()
-            .insert(handle.to_owned(), parent.to_owned());
-    }
-
-    /// The parent that minted a child handle (the spawn registry, R3).
+    /// The parent that minted a child handle (R3: the handle is opaque, so
+    /// it is resolved by the relation, never by the handle's format). The
+    /// live child session knows its parent (`child_link`); a child that is
+    /// gone from the sessions map is still named by its parent's supervisor
+    /// registry, which keeps a closed child's entry and is the one the
+    /// re-adopt re-fills after a reclamation (#250).
     pub(crate) fn child_parent(&self, handle: &str) -> Option<String> {
-        self.child_handles.lock().get(handle).cloned()
+        let sessions = self.sessions.lock();
+        for (id, live) in sessions.iter() {
+            if let Some(link) = live.agent.child_link()
+                && link.handle() == handle
+            {
+                return Some(link.parent_session().to_owned());
+            }
+            if let Some(sup) = live.agent.subagents()
+                && sup.handles().iter().any(|h| h == handle)
+            {
+                return Some(id.clone());
+            }
+        }
+        None
     }
-
     /// The write refusal for an archived session (ADR-0005): its live
     /// file is gone, so an append would recreate it headerless (the
     /// restore would then refuse it) — every write command checks this

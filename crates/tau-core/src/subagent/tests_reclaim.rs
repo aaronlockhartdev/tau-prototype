@@ -446,7 +446,7 @@ async fn the_hard_cap_refuses_a_spawn_over_the_bound() {
 async fn a_spawn_over_the_soft_bound_evicts_the_oldest_terminal() {
     let dir = tempfile::tempdir().unwrap();
     // Soft bound 2: the third spawn evicts one terminal child.
-    let (sup, bridge, _parent) = harness(
+    let (sup, _bridge, _parent) = harness(
         dir.path(),
         vec![sse("x", &[])],
         vec![
@@ -506,13 +506,7 @@ async fn a_spawn_over_the_soft_bound_evicts_the_oldest_terminal() {
         .spawn("general", "c", None, "c3")
         .expect("spawn 2")
         .handle;
-    // The reclamation notice names the evicted (oldest terminal) child.
-    let reclaims = bridge.reclaims.lock().clone();
-    assert_eq!(reclaims.len(), 1, "one child was reclaimed");
-    assert_eq!(
-        reclaims[0].handle, h0,
-        "the oldest terminal child is evicted"
-    );
+    // The registry now holds the two youngest: h1 (terminal) + h2 (running).
     // The registry now holds the two youngest: h1 (terminal) + h2 (running).
     let binding = sup.handles();
     let handles: Vec<&str> = binding.iter().map(String::as_str).collect();
@@ -535,7 +529,7 @@ async fn a_parked_child_is_never_evicted() {
     let dir = tempfile::tempdir().unwrap();
     // Soft bound 1: with two children over the bound, only a terminal one
     // can be evicted. Both here are parked (idle) → nothing is evicted.
-    let (sup, bridge, _parent) = harness(
+    let (sup, _bridge, _parent) = harness(
         dir.path(),
         vec![sse("x", &[])],
         vec![
@@ -564,9 +558,9 @@ async fn a_parked_child_is_never_evicted() {
     wait_for(|| matches!(sup.state_info(&h1).unwrap().state, ChildState::Idle { .. }));
     // Two parked children, soft bound 1: over the bound, but neither is
     // terminal, so the reclamation evicts nothing.
-    assert!(
-        bridge.reclaims.lock().is_empty(),
-        "no parked child is ever reclaimed"
+    assert_eq!(
+        sup.handles().len(),
+        2,
+        "no parked child is ever reclaimed: both stay in the registry"
     );
-    assert_eq!(sup.handles().len(), 2, "both parked children stay");
 }

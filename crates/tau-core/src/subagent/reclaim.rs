@@ -8,9 +8,7 @@
 //! and its live session are never touched.
 
 use super::restore::{self, DiskChild};
-use super::{
-    AgentSession, Arc, Child, ReadoptNotice, ReclaimNotice, SessionStore, Supervisor, TurnOrigin,
-};
+use super::{AgentSession, Arc, Child, SessionStore, Supervisor, TurnOrigin};
 use crate::harness::{SessionRole, info_to_protocol};
 use crate::om_integration::OmState;
 use crate::tools;
@@ -65,28 +63,22 @@ impl Supervisor {
         // counter is the age (a fresh parent mints from 1); `created` is a
         // coarse (epoch-ms) tie-break only — a burst of spawns in the same
         // millisecond shares a `created` while the mint counter stays
-        // unique per parent. Owned handles + clones: the candidates must not
-        // keep a borrow of the map live across the `remove` below.
-        let mut candidates: Vec<(String, Arc<Child>)> = children
+        // unique per parent. Owned keys: the candidates must not keep a
+        // borrow of the map live across the `remove` below.
+        let mut candidates: Vec<(String, u64)> = children
             .iter()
             .filter(|(_, c)| c.state().is_terminal())
-            .map(|(h, c)| (h.clone(), c.clone()))
+            .map(|(h, c)| (h.clone(), c.created))
             .collect();
         candidates.sort_by(|(ha, ca), (hb, cb)| {
-            ca.created
-                .cmp(&cb.created)
+            ca.cmp(cb)
                 .then_with(|| mint_counter(ha).cmp(&mint_counter(hb)))
         });
-        for (handle, child) in candidates {
+        for (handle, _) in candidates {
             if children.len() <= soft {
                 break;
             }
             children.remove(&handle);
-            self.bridge.reclaimed(&ReclaimNotice {
-                parent: self.parent_session.clone(),
-                handle,
-                child: child.session_id.clone(),
-            });
         }
     }
 
@@ -190,14 +182,6 @@ impl Supervisor {
         self.children
             .lock()
             .insert(child.handle.clone(), child.clone());
-        // The reclamation dropped the mint record: re-register the handle
-        // (the bridge re-records `child_handles`; the child's live session
-        // and file are untouched).
-        self.bridge.re_adopted(&ReadoptNotice {
-            parent: self.parent_session.clone(),
-            handle: child.handle.clone(),
-            child: child.session_id.clone(),
-        });
         Some(child)
     }
 }

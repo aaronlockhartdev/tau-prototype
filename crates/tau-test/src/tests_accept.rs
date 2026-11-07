@@ -86,8 +86,6 @@ impl ChildDriver for AcceptanceDriver {
 /// to the parent loop exactly as the app does (`send_notified_steer`, provenance).
 struct AcceptanceBridge {
     parent: Mutex<Weak<AgentSession>>,
-    reclaims: Mutex<Vec<ReclaimNotice>>,
-    readopts: Mutex<Vec<ReadoptNotice>>,
 }
 /// The completion gate (spec §5.3): a failing check bounces repair turns
 /// until `max_retries` is exhausted (the session is marked `gate_failed`), and
@@ -210,12 +208,6 @@ pub(crate) async fn accept_gate(ctx: &Ctx) -> Result<(), String> {
 impl SubagentBridge for AcceptanceBridge {
     fn spawned(&self, _n: &SpawnNotice) {}
     fn state(&self, _n: &StateNotice) {}
-    fn reclaimed(&self, n: &ReclaimNotice) {
-        self.reclaims.lock().push(n.clone());
-    }
-    fn re_adopted(&self, n: &ReadoptNotice) {
-        self.readopts.lock().push(n.clone());
-    }
     fn wake(&self, n: &WakeNotice) {
         let Some(p) = self.parent.lock().upgrade() else {
             return;
@@ -240,8 +232,6 @@ pub(crate) async fn accept_subagent(ctx: &Ctx) -> Result<(), String> {
 
     let bridge = Arc::new(AcceptanceBridge {
         parent: Mutex::new(Weak::new()),
-        reclaims: Mutex::new(Vec::new()),
-        readopts: Mutex::new(Vec::new()),
     });
     let sup = Supervisor::new(SupervisorParams {
         parent_session: id.clone(),
@@ -411,8 +401,6 @@ pub(crate) async fn accept_reclaim(ctx: &Ctx) -> Result<(), String> {
 
     let bridge = Arc::new(AcceptanceBridge {
         parent: Mutex::new(Weak::new()),
-        reclaims: Mutex::new(Vec::new()),
-        readopts: Mutex::new(Vec::new()),
     });
     let sup = Supervisor::new(SupervisorParams {
         parent_session: id.clone(),
@@ -506,17 +494,20 @@ pub(crate) async fn accept_reclaim(ctx: &Ctx) -> Result<(), String> {
 
     // Two terminal children, soft bound 2: the fleet is at the bound, not
     // over it, so no reclamation has fired yet.
-    {
-        let reclaims = bridge.reclaims.lock();
-        if !reclaims.is_empty() {
-            return Err(format!(
-                "accept-reclaim: unexpected early reclamation: {reclaims:?}"
-            ));
-        }
+    if sup.handles().len() != 2 {
+        return Err(format!(
+            "accept-reclaim: the fleet at the soft bound was reclaimed: {:?}",
+            sup.handles()
+        ));
     }
     // The 3rd spawn pushes the fleet to 3 > soft bound 2: one terminal child
     // is evicted (handles only — its file and live session are intact). The
     // reclamation notice names the evicted child; that is the re-address key.
+    let live_before: Vec<String> = sup
+        .handles()
+        .iter()
+        .filter_map(|h| sup.child_session_id(h))
+        .collect();
     let third = sup
         .spawn(
             "general",
@@ -526,25 +517,23 @@ pub(crate) async fn accept_reclaim(ctx: &Ctx) -> Result<(), String> {
         )
         .map_err(|e| format!("accept-reclaim: the 3rd spawn failed: {e}"))?;
     let evicted = {
-        let reclaims = bridge.reclaims.lock();
-        if reclaims.len() != 1 {
-            return Err(format!(
-                "accept-reclaim: expected one reclamation, saw {reclaims:?}"
-            ));
-        }
-        // The evicted child must be one of the two model-spawned children
-        // (never the 3rd, which is the live filler that triggered the push).
-        let evicted = reclaims[0].child.clone();
+        // The registry is the reclamation's record: the evicted child is the
+        // one of the two model-spawned children no longer in it.
         let live: Vec<String> = sup
             .handles()
             .iter()
             .filter_map(|h| sup.child_session_id(h))
             .collect();
-        if live.iter().any(|c| c == &evicted) {
+        if live.len() != 2 {
             return Err(format!(
-                "accept-reclaim: the evicted child {evicted} is still in the live registry"
+                "accept-reclaim: expected one reclamation, saw the registry {live:?}"
             ));
         }
+        let evicted = live_before
+            .iter()
+            .find(|c| !live.iter().any(|l| l == *c))
+            .cloned()
+            .ok_or("accept-reclaim: no model-spawned child was evicted")?;
         if evicted == third.session_id {
             return Err(
                 "accept-reclaim: the 3rd (triggering) child was evicted, not a terminal one".into(),
@@ -565,20 +554,6 @@ pub(crate) async fn accept_reclaim(ctx: &Ctx) -> Result<(), String> {
             "accept-reclaim: the re-adopted child is not terminal: {}",
             info.state.kind()
         ));
-    }
-    {
-        let readopts = bridge.readopts.lock();
-        if readopts.len() != 1 {
-            return Err(format!(
-                "accept-reclaim: expected one re-adopt, saw {readopts:?}"
-            ));
-        }
-        if readopts[0].child != evicted {
-            return Err(format!(
-                "accept-reclaim: re-adopted {} but addressed {}",
-                readopts[0].child, evicted
-            ));
-        }
     }
     // The re-adopted handle is back in the live registry.
     if !sup
@@ -610,8 +585,6 @@ pub(crate) async fn accept_sender_labels(ctx: &Ctx) -> Result<(), String> {
 
     let bridge = Arc::new(AcceptanceBridge {
         parent: Mutex::new(Weak::new()),
-        reclaims: Mutex::new(Vec::new()),
-        readopts: Mutex::new(Vec::new()),
     });
     let sup = Supervisor::new(SupervisorParams {
         parent_session: id.clone(),
