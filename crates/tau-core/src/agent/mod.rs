@@ -14,7 +14,7 @@ use crate::session::{Entry, EntryEventHook, SessionStore};
 use crate::tools;
 use parking_lot::Mutex;
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,7 +56,6 @@ pub(crate) type StreamDeltaHook = Arc<dyn Fn(&StreamDelta) + Send + Sync>;
 pub enum AgentError {
     Session(crate::session::Error),
     Provider(crate::provider::ProviderError),
-    Om(crate::om_integration::OmError),
     /// The assembled prompt exceeds the context gate's safe budget with no
     /// unobserved material left to compact (tickets #255/#256).
     ContextOverflow {
@@ -83,7 +82,6 @@ impl fmt::Display for AgentError {
         match self {
             Self::Session(e) => write!(f, "session: {e}"),
             Self::Provider(e) => write!(f, "provider: {e}"),
-            Self::Om(e) => write!(f, "om: {e}"),
             Self::ContextOverflow { prompt, budget } => write!(
                 f,
                 "context overflow: prompt ~{prompt} tokens exceeds the safe budget of {budget}; nothing left to compact"
@@ -371,10 +369,13 @@ pub(crate) struct Inner {
     /// boundary, ticket #86 P2); lost on restart, where the record's
     /// `last_buffered_at_tokens` takes over.
     pub(crate) om_buffer_boundary: u64,
-    /// Whether this run has already recorded an `om_stalled` fact: the flag
-    /// mirrors the record, so a restart re-records the stall it resumes into
-    /// rather than re-scanning the log (ADR-0034's `LiveState` mirror).
-    pub(crate) om_stall_recorded: bool,
+    /// The records this run has already written, keyed by what each records:
+    /// `om_stall`, `gate_gap:{model}`, `om_failed:{stage}`,
+    /// `config:{path}:{reason}`. One record per key, never one per request
+    /// (#306). A key is held only while its record exists — an append that
+    /// fails takes it back out, so the next pass retries it (#1J, the one
+    /// latch `Inner::once` owns).
+    pub(crate) latches: BTreeSet<String>,
     /// The endpoint the memory passes run at, from `[om].om_model` (#348).
     pub(crate) om_route: OmRoute,
     /// The OM-run observer (the app emits the protocol's `om_status` event
@@ -412,16 +413,6 @@ pub(crate) struct Inner {
     /// The job-completion hook (#53): the harness wakes the session on it —
     /// the same steering lane a sub-agent's report rides.
     job_notify_hook: Option<crate::tools::bgjobs::JobCompletionHook>,
-    /// The model whose `gate_unavailable` gap this run has already recorded
-    /// (the #306 latch): one record per model, never one per request.
-    pub(crate) gate_gap_recorded: Option<String>,
-    /// The OM stages whose exhausted retries this run has already recorded as
-    /// `om_failed` (#338): one record per stage, not one per round-trip.
-    pub(crate) om_failed_recorded: Vec<String>,
-    /// The `(file, reason)` config failure this run has already stated to the
-    /// session (#359): the boundary runs every turn, so one failure is recorded
-    /// once, not per turn.
-    pub(crate) config_rejection: Option<(String, String)>,
 }
 /// One session's agent loop. Single-writer per session (spec §2): the GUI
 /// (or a parent agent) drives it with `send` + `process`; the kill flag is
@@ -544,7 +535,7 @@ impl AgentSession {
                 om: p.om,
                 om_inflight: None,
                 om_buffer_boundary: 0,
-                om_stall_recorded: false,
+                latches: BTreeSet::new(),
                 om_route: p.om_route,
                 om_status_hook: None,
                 entry_upsert_hook: None,
@@ -556,9 +547,6 @@ impl AgentSession {
                 anchors: Arc::new(parking_lot::Mutex::new(anchor_registry)),
                 background_jobs: Arc::new(crate::tools::bgjobs::BackgroundJobs::default()),
                 job_notify_hook: None,
-                gate_gap_recorded: None,
-                om_failed_recorded: Vec::new(),
-                config_rejection: None,
             })),
             provider: p.provider,
             kill: Arc::new(AtomicBool::new(false)),

@@ -1,3 +1,4 @@
+use super::estimate::om_items_digest;
 use crate::agent::{
     CallOutput, Entry, FunctionCallInput, FunctionCallOutputInput, InputEntry, InputMessage,
     TurnResult, Value,
@@ -46,9 +47,10 @@ pub(super) fn with_plan_state(mut instructions: String, plan: Option<&str>) -> S
 /// One assembly's parts together with the branch they were read from. The
 /// entries travel with the items so the prompt estimate can anchor on the last
 /// request's provider count and price only what was appended after it (plan
-/// §6.9); `om_items` is how many *leading* items the observation state
-/// contributed — assembly always prepends them, so `items[..om_items]` is that
-/// contribution, and a compaction is what makes it differ from zero.
+/// §6.9). The observation state contributes the *leading* items — assembly
+/// always prepends them — so `om_digest` digests exactly that prefix where the
+/// items are built: a compaction or a reflector rewrite moves it, and the
+/// anchored estimate's guard is a number, never a re-serialization of the log.
 pub(super) struct Assembled {
     /// The model this request addresses, so a value resolved for another model
     /// fails beside it (plan §6.8).
@@ -56,13 +58,36 @@ pub(super) struct Assembled {
     pub instructions: String,
     pub items: Vec<InputEntry>,
     pub entries: Vec<Entry>,
-    pub om_items: usize,
+    /// The digest of the observation prefix, `None` when serializing it failed;
+    /// `PromptAnchor::price` declines on `None`.
+    pub om_digest: Option<u64>,
     /// A child session's parent, whose name decorates its user entries
     /// (ADR-0001 supplement); the tail estimate applies the same labels.
     pub parent_session: Option<String>,
 }
 
 impl Assembled {
+    /// One assembly, its observation prefix digested where the items are built.
+    /// `om_prefix` is how many leading items the observation state contributed;
+    /// the count is not kept — the guard it produces is the digest.
+    pub(super) fn new(
+        model: String,
+        instructions: String,
+        items: Vec<InputEntry>,
+        entries: Vec<Entry>,
+        om_prefix: usize,
+        parent_session: Option<String>,
+    ) -> Self {
+        Self {
+            om_digest: om_items_digest(&items[..om_prefix]),
+            model,
+            instructions,
+            items,
+            entries,
+            parent_session,
+        }
+    }
+
     /// Whether the assembled input answers a query: at least one `role: user`
     /// item (#334). A chat template is allowed to refuse a request with none —
     /// the string is a template rule, not a wire-protocol rule — so the

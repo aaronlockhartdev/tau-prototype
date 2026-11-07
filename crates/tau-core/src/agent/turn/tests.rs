@@ -1,3 +1,4 @@
+use super::estimate::om_items_digest;
 use super::*;
 use crate::agent::{CallOutput, Entry, FunctionCall, InputEntry};
 
@@ -318,12 +319,13 @@ fn a_diagnostic_record_costs_no_context() {
 // --- the anchored prompt estimate (plan §6.4) ---
 
 fn assembled(instructions: &str, entries: Vec<Entry>) -> Assembled {
+    let items = input_items(&entries, None);
     Assembled {
         model: "test-model".to_owned(),
         instructions: instructions.to_owned(),
-        items: input_items(&entries, None),
+        om_digest: om_items_digest(&[]),
+        items,
         entries,
-        om_items: 0,
         parent_session: None,
     }
 }
@@ -346,7 +348,8 @@ fn grew_by(entries: Vec<Entry>, output: &str) -> Assembled {
 }
 
 /// An assembly whose request also carried an observation log: the log rides the
-/// request's items, ahead of the entry items (plan §6.9).
+/// request's items as one leading item, ahead of the entry items (plan §6.9).
+/// The digest covers that prefix, the way assembly takes it.
 fn observed(mut a: Assembled, log: &str) -> Assembled {
     a.items.insert(
         0,
@@ -355,7 +358,7 @@ fn observed(mut a: Assembled, log: &str) -> Assembled {
             content: log.to_owned(),
         }),
     );
-    a.om_items = 1;
+    a.om_digest = om_items_digest(&a.items[..1]);
     a
 }
 
@@ -430,11 +433,35 @@ fn a_changed_observation_item_drops_the_anchor() {
     let anchor = PromptAnchor::after_call(&assembled("sys", history()), &tools, 9_000)
         .expect("a branch anchors");
     let mut next = grew_by(history(), "later");
-    next.om_items = 1;
+    next.items.insert(
+        0,
+        InputEntry::Message(crate::provider::InputMessage {
+            role: "system".to_owned(),
+            content: "the first observation".to_owned(),
+        }),
+    );
+    next.om_digest = om_items_digest(&next.items[..1]);
     assert_eq!(
         prompt_size(Some(&anchor), &next, &tools),
         prompt_size(None, &next, &tools),
         "the observation state contributed an item the anchored request never carried"
+    );
+}
+
+#[test]
+fn an_undigestable_observation_prefix_prices_the_whole_prompt() {
+    let tools = tool_fingerprint(NO_TOOLS);
+    let mut sent = observed(assembled("sys", history()), "the first observation");
+    // A prefix the serializer refused has no digest, so nothing can show an
+    // anchor describes its prompt: the anchor declines and the whole-prompt
+    // estimate — the number that is always right — prices it.
+    sent.om_digest = None;
+    let anchor = PromptAnchor::after_call(&sent, &tools, 9_000).expect("a branch anchors");
+    let next = grew_by(history(), "later");
+    assert_eq!(
+        prompt_size(Some(&anchor), &next, &tools),
+        prompt_size(None, &next, &tools),
+        "an anchor with no digest to compare prices nothing it cannot identify"
     );
 }
 
@@ -452,7 +479,10 @@ fn a_rewritten_observation_log_drops_the_anchor() {
     let sent = observed(assembled("sys", history()), "the first observation");
     let anchor = PromptAnchor::after_call(&sent, &tools, 9_000).expect("a branch anchors");
     let next = observed(grew_by(history(), "later"), "the compressed observation");
-    assert_eq!(next.om_items, sent.om_items, "same shape, different bytes");
+    assert_ne!(
+        sent.om_digest, next.om_digest,
+        "same shape, different bytes: the guard is the content"
+    );
     assert_eq!(
         prompt_size(Some(&anchor), &next, &tools),
         prompt_size(None, &next, &tools),

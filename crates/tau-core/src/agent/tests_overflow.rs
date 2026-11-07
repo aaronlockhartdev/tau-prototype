@@ -602,3 +602,77 @@ async fn a_gate_with_no_room_refuses_the_turn_and_calls_no_provider() {
         records[0]
     );
 }
+
+/// The gate-gap latch's rollback (#1J): a `gate_unavailable` whose append
+/// fails leaves the latch clear, so the next turn writes the record. The
+/// failure is the sidecar-blob write: the record's payload clears the 100 KB
+/// blob threshold (the model name carries the weight) and `blobs` is a
+/// regular file — the seam the F4 pin in `tests_ladder.rs` breaks the same way.
+#[tokio::test]
+async fn a_gate_gap_whose_record_fails_is_written_by_the_next_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    // Long enough that the record's payload clears the 100 KB blob threshold.
+    let model = "m".repeat(120_000);
+    let provider = Arc::new(ScriptedProvider::new(vec![sse("ok", &[])]));
+    let agent = AgentSession::new(SessionParams {
+        store: session_in(dir.path()),
+        stop: Arc::new(AtomicBool::new(false)),
+        system_prompt: "be terse".into(),
+        model: model.clone(),
+        tools: tools::surface::bare_specs(),
+        cwd: dir.path().to_path_buf(),
+        provider,
+        tool_batch_on_force: ToolBatchPolicy::Complete,
+        turn: TurnConfig {
+            context_window: 0,
+            max_output_tokens: None,
+            ..Default::default()
+        },
+        gates: None,
+        gate_failed: false,
+        hashline: crate::hashline::pin_store::GcPolicy::default(),
+        om: None,
+        om_route: crate::agent::OmRoute::Session,
+        subagents: None,
+        child: None,
+    });
+    std::fs::write(dir.path().join(".tau/blobs"), "not a directory").unwrap();
+
+    agent.send("go", Lane::FollowUp);
+    let first = agent.process().await;
+    assert!(
+        matches!(first, Err(AgentError::GateUnavailable { .. })),
+        "a record that fails to append does not replace the gate's refusal: {first:?}"
+    );
+
+    std::fs::remove_file(dir.path().join(".tau/blobs")).unwrap();
+    std::fs::create_dir(dir.path().join(".tau/blobs")).unwrap();
+
+    agent.send("go2", Lane::FollowUp);
+    let second = agent.process().await;
+    assert!(
+        matches!(&second, Err(AgentError::GateUnavailable { model: m, reasons }) if m == &model && reasons == &["context_window".to_owned(), "max_tokens".to_owned()]),
+        "the gate refuses again: {second:?}"
+    );
+
+    let mut reopened = SessionStore::for_workspace(dir.path(), "s1");
+    reopened.open().unwrap();
+    let records: Vec<serde_json::Value> = entries_of(&reopened)
+        .iter()
+        .filter(|e| e.kind == EntryKind::Diagnostic)
+        .map(|e| match &e.payload {
+            serde_json::Value::Null => {
+                let blob = e.blob.as_ref().unwrap();
+                let bytes = SessionStore::read_blob(&dir.path().join(".tau"), blob).unwrap();
+                String::from_utf8(bytes).unwrap().parse().unwrap()
+            }
+            other => other.clone(),
+        })
+        .filter(|p| p["code"] == "gate_unavailable")
+        .collect();
+    assert_eq!(
+        records.len(),
+        1,
+        "the latch clears with the failed append, so the next turn writes the record: {records:?}"
+    );
+}

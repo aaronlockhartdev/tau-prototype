@@ -125,18 +125,26 @@ async fn an_observed_brief_anchors_the_request() {
         1,
         "the anchor appears exactly once: {users:?}"
     );
-    let om_prefix = &assembled.items[..assembled.om_items];
-    assert!(
-        om_prefix.iter().all(|item| matches!(
-            item,
-            InputEntry::Message(m) if matches!(m.role.as_str(), "user" | "system")
-        )),
-        "the anchored prefix is the anchor plus the observation items"
+    // The §4 cut dropped the observed tool run, so the request is the anchored
+    // entry, the observation group, and the continuation hint: the OM prefix is
+    // the whole request, and the only user entries are the anchor and the hint.
+    let roles: Vec<&str> = assembled
+        .items
+        .iter()
+        .map(|item| match item {
+            InputEntry::Message(m) => m.role.as_str(),
+            InputEntry::Call(_) | InputEntry::CallOutput(_) => "call",
+        })
+        .collect();
+    assert_eq!(
+        roles,
+        ["user", "system", "user"],
+        "the anchor leads, the observation group and hint follow"
     );
     assert_eq!(
-        user_contents(&assembled.items[assembled.om_items..]),
-        Vec::<String>::new(),
-        "the tail is the tool run, so only the anchor answers the query"
+        users.len(),
+        2,
+        "the anchor and the continuation hint answer; the observed tool run contributes no user entry: {users:?}"
     );
     assert!(assembled.has_user_query());
     // The ENTRY is pinned, not the RANGE: the cursor stays where compaction
@@ -195,8 +203,9 @@ async fn a_user_entry_in_the_tail_is_the_query_and_is_not_duplicated() {
         "nothing is prepended: the request opens on the observation items"
     );
     assert_eq!(
-        assembled.om_items, 2,
-        "the observation group plus the hint, no anchor"
+        user_contents(&assembled.items[2..]),
+        vec!["steer".to_owned()],
+        "the observation group and the hint lead, the tail is the steering entry"
     );
 }
 

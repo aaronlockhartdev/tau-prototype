@@ -302,18 +302,9 @@ impl Core {
             // A layer the code cannot read is the user's to fix: the record names
             // the file and what the loader said, and the boundary proceeds on the
             // config the session keeps — the edit is inert, never silent (#359).
-            Some(rejection) => {
-                if live
-                    .agent
-                    .config_rejection_changed(&rejection.path, &rejection.reason)
-                    && let Err(e) = live.agent.diagnostic(&Diagnostic::ConfigRejected {
-                        path: rejection.path,
-                        reason: rejection.reason,
-                    })
-                {
-                    tracing::warn!("record the config rejection: {e}");
-                }
-            }
+            Some(rejection) => live
+                .agent
+                .record_config_rejection(&rejection.path, &rejection.reason),
             None => live.agent.config_accepted(),
         }
         // #336's route, read from the reloaded config: taking the config's first

@@ -1,12 +1,14 @@
 use super::assemble::{Assembled, input_items};
-use crate::provider::ToolSpec;
+use crate::provider::{InputEntry, ToolSpec};
 
 /// What the provider charged for one request the turn sent, held beside the
 /// parts of the assembly it priced: the estimate for the next call anchors on
 /// that count, so only material appended after the anchored request is ever a
 /// guess (spec §4, plan §6.4). The guard fields carry the identity of what the
 /// count describes, so a stale anchor fails at the read rather than silently
-/// pricing a different prompt (plan §6.8).
+/// pricing a different prompt (plan §6.8). Each guard is an xxh3 digest of the
+/// content it names — the content stays the rule (a reflector rewriting the
+/// log moves the digest), and the anchor carries no copy of the prompt.
 #[derive(Debug, Clone)]
 pub(super) struct PromptAnchor {
     /// The model that answered, whose tokenizer produced the count. A session's
@@ -15,13 +17,16 @@ pub(super) struct PromptAnchor {
     /// The entry the anchored request ended at.
     leaf: String,
     /// The instructions it carried: the plan state rides here.
-    instructions: String,
-    /// The tool specs it carried, as serialized.
-    tools: String,
-    /// The observation items it carried, as serialized. The log rides the
-    /// request's items, not its instructions, and a reflector can rewrite it
-    /// without adding or removing an item, so the content is the guard.
-    om_items: String,
+    instructions: u64,
+    /// The tool specs it carried, digested from the same serialization the
+    /// whole-prompt estimate prices.
+    tools: u64,
+    /// The observation items it carried, as the assembly digested them. The log
+    /// rides the request's items, not its instructions, and a reflector can
+    /// rewrite it without adding or removing an item, so the content is the
+    /// guard. `None` — a prefix the serializer refused — is no anchor: the
+    /// whole-prompt estimate is always correct, so declining is free.
+    om_digest: Option<u64>,
     /// The provider's own `usage.input_tokens` — never an estimate (plan §6.4:
     /// the provider's number is the recorded number).
     input_tokens: u64,
@@ -39,9 +44,9 @@ impl PromptAnchor {
         Some(Self {
             model: assembled.model.clone(),
             leaf: assembled.leaf()?.to_owned(),
-            instructions: assembled.instructions.clone(),
-            tools: tools_json.to_owned(),
-            om_items: fingerprint(&assembled.items[..assembled.om_items]),
+            instructions: digest(&assembled.instructions),
+            tools: digest(tools_json),
+            om_digest: assembled.om_digest,
             input_tokens,
         })
     }
@@ -51,11 +56,15 @@ impl PromptAnchor {
     /// request with a tail — a model switch, a compaction, a re-injection, a
     /// changed tool surface, or a branch that no longer carries the entry it
     /// ended at.
+    /// `None` when the observation prefix has no digest: nothing shows the
+    /// anchor describes that prompt, so it declines rather than pricing one it
+    /// cannot identify.
     fn price(&self, assembled: &Assembled, tools_json: &str) -> Option<u32> {
+        let om_digest = assembled.om_digest?;
         if self.model != assembled.model
-            || self.instructions != assembled.instructions
-            || self.tools != tools_json
-            || self.om_items != fingerprint(&assembled.items[..assembled.om_items])
+            || self.instructions != digest(&assembled.instructions)
+            || self.tools != digest(tools_json)
+            || self.om_digest != Some(om_digest)
         {
             return None;
         }
@@ -71,13 +80,25 @@ impl PromptAnchor {
 }
 
 /// The tool specs as the request serializes them — computed once per call so
-/// the anchor compares the same string the whole-prompt estimate prices.
+/// the anchor digests the same string the whole-prompt estimate prices.
 pub(super) fn tool_fingerprint(tools: &[ToolSpec]) -> String {
-    fingerprint(tools)
+    serde_json::to_string(tools).unwrap_or_default()
 }
 
-fn fingerprint<T: serde::Serialize + ?Sized>(value: &T) -> String {
-    serde_json::to_string(value).unwrap_or_default()
+/// The digest of the items the observation state contributed, taken at
+/// assembly where those items are built: pricing a prompt costs a comparison
+/// and never a re-serialization of the log. An empty slice is the no-OM
+/// assembly's zero contribution, digested like any other. A serialization
+/// failure has no digest — the caller prices the whole prompt, the number that
+/// is always right.
+pub(super) fn om_items_digest(items: &[InputEntry]) -> Option<u64> {
+    serde_json::to_string(items)
+        .ok()
+        .map(|json| xxhash_rust::xxh3::xxh3_64(json.as_bytes()))
+}
+
+fn digest(value: &str) -> u64 {
+    xxhash_rust::xxh3::xxh3_64(value.as_bytes())
 }
 
 /// The prompt's size for the gate and the output clamp: anchored when an anchor

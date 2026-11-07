@@ -48,7 +48,7 @@ impl AgentSession {
         let (budget, wish, window) = match gate {
             // Scope 1: a `Missing` gate is a refusal, never an unbounded prompt.
             ContextGate::Missing { reasons } => {
-                self.record_gate_gap(&model, reasons)?;
+                self.record_gate_gap(&model, reasons);
                 return Err(AgentError::GateUnavailable {
                     model,
                     reasons: reasons.clone(),
@@ -72,7 +72,7 @@ impl AgentSession {
         // just priced (`prompt + cap + margin <= window`). Zero is no room.
         let cap = clamp_max_output(wish, window, *priced.prompt);
         if cap == 0 {
-            self.record_gate_gap(&model, &["context_room".to_owned()])?;
+            self.record_gate_gap(&model, &["context_room".to_owned()]);
             return Err(AgentError::GateUnavailable {
                 model,
                 reasons: vec!["context_room".to_owned()],
@@ -118,7 +118,7 @@ impl AgentSession {
         // passes, and a pass that compacts nothing ends the rung — the rungs
         // below are the only compaction left.
         for _ in 0..self.unobserved_entries().max(1) {
-            self.om_turn_end().await?;
+            self.om_turn_end().await;
             if !self.rung_moves(&mut compacted) {
                 break;
             }
@@ -232,26 +232,19 @@ impl AgentSession {
 
     /// The durable trace of a gate with no budget: one `gate_unavailable`
     /// record per model per run (the #306 latch — one per request is spam, a
-    /// silent refusal is the defect the incident showed).
-    fn record_gate_gap(&self, model: &str, reasons: &[String]) -> Result<(), AgentError> {
-        let fresh = {
-            let mut guard = self.inner.lock();
-            let Inner {
-                gate_gap_recorded, ..
-            } = &mut *guard;
-            if gate_gap_recorded.as_deref() == Some(model) {
-                false
-            } else {
-                *gate_gap_recorded = Some(model.to_owned());
-                true
-            }
-        };
-        if fresh {
-            self.diagnostic(&Diagnostic::GateUnavailable {
+    /// silent refusal is the defect the incident showed). The refusal is the
+    /// point and the record is the trace (`refuse_over_budget`'s rule): an
+    /// append that fails goes to the log, the refusal stands, and the latch
+    /// clears with the failure so the next turn writes the record (#1J).
+    fn record_gate_gap(&self, model: &str, reasons: &[String]) {
+        if let Err(e) = self.inner.lock().once(
+            &format!("gate_gap:{model}"),
+            &Diagnostic::GateUnavailable {
                 model: model.to_owned(),
                 missing: reasons.to_vec(),
-            })?;
+            },
+        ) {
+            tracing::warn!("gate: the gate_unavailable record failed to append: {e}");
         }
-        Ok(())
     }
 }

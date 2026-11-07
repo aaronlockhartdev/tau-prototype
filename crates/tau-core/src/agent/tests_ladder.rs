@@ -255,9 +255,9 @@ async fn a_promote_whose_save_fails_records_the_session_stage() {
         !stages.contains(&"buffer".to_owned()),
         "a promote runs no buffer round-trip, so it files no buffer failure: {stages:?}"
     );
-    let latched = agent.inner.lock().om_failed_recorded.clone();
+    let latched = agent.inner.lock().latches.clone();
     assert!(
-        latched.contains(&"session".to_owned()) && !latched.contains(&"buffer".to_owned()),
+        latched.contains("om_failed:session") && !latched.contains("om_failed:buffer"),
         "the latch holds the stage that died; the buffer stage stays free to record: {latched:?}"
     );
 }
