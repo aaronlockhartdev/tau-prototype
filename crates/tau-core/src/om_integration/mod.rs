@@ -223,30 +223,6 @@ impl OmState {
     }
 }
 
-/// The end id of the chunk that reaches furthest along the branch (numeric
-/// `range.1`; chunks arrive in commit order, not id order). Ids that do not
-/// parse count as 0.
-#[must_use]
-pub(crate) fn last_chunk_end(chunks: &[BufferedChunk]) -> Option<String> {
-    chunks
-        .iter()
-        .max_by_key(|c| c.range.1.parse::<u64>().ok())
-        .map(|c| c.range.1.clone())
-}
-
-/// Two chunk ranges intersect. Entry ids are zero-padded decimal strings and
-/// a range is the closed `[first, last]` id span; ids that do not parse (the
-/// group-id fixture shape) overlap only when equal. This is the double-
-/// observe guard a plain equality miss leaves open: a late commit, a fork
-/// inheriting the parent's vec (#402).
-pub(crate) fn ranges_overlap(a: &(String, String), b: &(String, String)) -> bool {
-    let span = |r: &(String, String)| (r.0.parse::<u64>().ok(), r.1.parse::<u64>().ok());
-    match (span(a), span(b)) {
-        ((Some(a0), Some(a1)), (Some(b0), Some(b1))) => a0.max(b0) <= a1.min(b1),
-        _ => a == b,
-    }
-}
-
 /// A fork copies the parent's record at the fork point (observations +
 /// cursor); a fork owns its copy outright (ADR-0004: a fork is the same
 /// session's history) — so it copies the FULL log, including a demoted
@@ -546,10 +522,12 @@ pub fn idle_gap_secs(all: &[Entry], leaf_id: Option<&str>) -> u64 {
     };
     current.timestamp.saturating_sub(branch[i - 1].timestamp) / 1000
 }
+mod id_range;
 mod retry;
 mod turn_end;
 pub use turn_end::*;
 pub(crate) mod background;
+pub(crate) use id_range::{IdRange, id_number, last_chunk_end, ranges_overlap};
 
 #[cfg(test)]
 pub(crate) mod tests;

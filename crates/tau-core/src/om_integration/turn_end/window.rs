@@ -3,7 +3,7 @@
 //! from `turn_end/mod.rs` at the 500-LOC soft limit (#395) — the settle
 //! sequence stays there; this is the window the assembly reads.
 
-use super::super::{Entry, OmError, OmState, SessionStore, is_raw};
+use super::super::{Entry, OmError, OmState, SessionStore, id_number, is_raw};
 use tau_protocol::EntryKind;
 
 /// The raw window: the material a main-turn assembly sends after the OM
@@ -66,16 +66,17 @@ pub(in crate::om_integration) fn unobserved_slice<'b>(
     }
 }
 
-/// The branch's suffix past a cursor that is not on it. An id that is not a
-/// number (a record from a build that minted differently) takes the whole
-/// branch: observe everything rather than skip material nothing can name.
+/// The branch's suffix past a cursor that is not on it: the entries minted
+/// after it. An id with no number (a record from a build that minted
+/// differently) takes the whole branch: observe everything rather than skip
+/// material nothing can name.
 fn branch_after<'b>(branch: &'b [Entry], cursor_id: &str) -> &'b [Entry] {
-    let Ok(seen) = cursor_id.parse::<u64>() else {
+    let Some(seen) = id_number(cursor_id) else {
         return branch;
     };
     match branch
         .iter()
-        .position(|e| e.id.parse::<u64>().is_ok_and(|n| n > seen))
+        .position(|e| id_number(&e.id).is_some_and(|n| n > seen))
     {
         Some(i) => &branch[i..],
         None => &branch[branch.len()..],

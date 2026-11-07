@@ -1,8 +1,8 @@
 pub use self::commit::{ObservedSpan, TurnEndAction};
 use self::window::{branch_of, raw_after, unobserved_slice};
 use super::{
-    BufferedChunk, Cursor, Entry, IDLE_ACTIVATION_SECS, OmError, OmState, SessionStore,
-    boundary_ts, entry_text, idle_gap_secs, om, transcript,
+    BufferedChunk, Cursor, Entry, IDLE_ACTIVATION_SECS, IdRange, OmError, OmState, SessionStore,
+    boundary_ts, entry_text, id_number, idle_gap_secs, om, transcript,
 };
 use crate::provider::{InputEntry, InputMessage, ResponseRequest, TurnProviderRef};
 use tau_protocol::OmStatusKind;
@@ -19,8 +19,8 @@ fn chunk_covered(cursor: Option<&Cursor>, chunk: &BufferedChunk) -> bool {
     let Some(cursor) = cursor else {
         return false;
     };
-    match (cursor.entry_id.parse::<u64>(), chunk.range.1.parse::<u64>()) {
-        (Ok(seen), Ok(end)) => end <= seen,
+    match (id_number(&cursor.entry_id), IdRange::of(&chunk.range)) {
+        (Some(seen), Some(span)) => span.ends_at_or_behind(seen),
         _ => false,
     }
 }

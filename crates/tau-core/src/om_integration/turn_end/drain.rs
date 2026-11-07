@@ -2,7 +2,7 @@
 //! caught up in bounded slices, in the open. Lag blocks the settle, never
 //! the turn.
 
-use super::super::{OmError, OmState, SessionStore};
+use super::super::{OmError, OmState, SessionStore, id_number};
 use super::TurnEndAction;
 use crate::provider::TurnProviderRef;
 
@@ -117,14 +117,12 @@ impl OmState {
             .last_buffered_at_tokens
             .max(durable.last_buffered_at_tokens);
         if let Some(end) = super::super::last_chunk_end(&self.record.buffered_chunks) {
-            let advanced = match self.buffer_cursor.as_deref() {
+            // The cursor rides the durable chunks' furthest end, by number; a
+            // cursor with no number (a record from a build that minted
+            // differently) stands: the durable end cannot order it.
+            let advanced = match self.buffer_cursor.as_deref().and_then(id_number) {
                 None => true,
-                // A non-numeric cursor (a record from a build that minted
-                // differently) stands: the durable end cannot order it.
-                Some(seen) => match (seen.parse::<u64>(), end.parse::<u64>()) {
-                    (Ok(seen), Ok(end)) => end > seen,
-                    _ => false,
-                },
+                Some(seen) => id_number(&end).is_some_and(|end| seen < end),
             };
             if advanced {
                 self.buffer_cursor = Some(end);

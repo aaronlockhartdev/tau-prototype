@@ -340,10 +340,32 @@ fn the_furthest_chunk_end_wins_over_commit_order() {
         .as_deref(),
         Some("00000044")
     );
-    // Ids this build cannot order count as 0: the first end stands.
+    // A range this build cannot place on the branch reaches nowhere: it
+    // contributes no cursor, and the state with no cursor takes the whole
+    // branch (`branch_after`'s rule) — observe everything, never a span
+    // nothing can order. A numbered chunk is the one that sets the cursor.
     assert_eq!(
-        crate::om_integration::last_chunk_end(&[span("legacy-a", "legacy-b"),]).as_deref(),
-        Some("legacy-b")
+        crate::om_integration::last_chunk_end(&[span("legacy-a", "legacy-b")]).as_deref(),
+        None
+    );
+    assert_eq!(
+        crate::om_integration::last_chunk_end(&[
+            span("legacy-a", "legacy-b"),
+            span("00000001", "00000002"),
+        ])
+        .as_deref(),
+        Some("00000002")
+    );
+    // Past the pad's ceiling the furthest end is the 9-digit one; the digits
+    // sort "99999999" above "100000000", so a string max parks the buffer
+    // cursor 99,999,999 entries behind where the run stopped.
+    assert_eq!(
+        crate::om_integration::last_chunk_end(&[
+            span("99999990", "99999999"),
+            span("100000000", "100000001"),
+        ])
+        .as_deref(),
+        Some("100000001")
     );
     assert_eq!(crate::om_integration::last_chunk_end(&[]).as_deref(), None);
 }
@@ -416,7 +438,7 @@ fn the_merge_drops_a_late_chunk_that_intersects_a_durable_range() {
 }
 
 #[test]
-fn range_overlap_reads_numeric_spans_and_falls_back_to_equality() {
+fn ranges_overlap_reads_numeric_spans_and_orders_nothing() {
     use crate::om_integration::ranges_overlap;
     let r = |a: &str, b: &str| (a.into(), b.into());
     assert!(ranges_overlap(
@@ -431,10 +453,27 @@ fn range_overlap_reads_numeric_spans_and_falls_back_to_equality() {
         &r("00000001", "00000003"),
         &r("00000004", "00000009")
     ));
-    // Group ids (the fixture shape) do not parse: equality is the answer.
-    assert!(ranges_overlap(&r("e1", "e1"), &r("e1", "e1")));
+    // Past the `{:08}` pad's ceiling the digits invert and the numbers do not.
+    // The pair shares entry 99999997, so the fresh chunk re-observes raw a
+    // durable chunk covers; comparing the strings puts max(a.0,b.0) =
+    // "99999997" above min(a.1,b.1) = "100000000" (a 9-digit id sorts under a
+    // padded 8-digit one) and calls the pair disjoint — #402's guard misses,
+    // the one span's text lands in the log a second time.
+    assert!(ranges_overlap(
+        &r("99999995", "99999997"),
+        &r("99999997", "100000000")
+    ));
+    // The neighbours either side of the ceiling stay disjoint: 99999999 is
+    // before 100000000 by number, and the padded strings agree.
+    assert!(!ranges_overlap(
+        &r("99999998", "99999999"),
+        &r("100000000", "100000001")
+    ));
+    // A range this build cannot place on the branch is no evidence that its
+    // raw is observed: an unorderable range suppresses no commit, equal or
+    // not (the fixture shape's ids; production ranges always carry numbers).
+    assert!(!ranges_overlap(&r("e1", "e1"), &r("e1", "e1")));
     assert!(!ranges_overlap(&r("e1", "e1"), &r("e2", "e2")));
-    assert!(!ranges_overlap(&r("e1", "e1"), &r("00000001", "00000002")));
     assert!(!ranges_overlap(&r("e1", "e1"), &r("00000001", "00000002")));
 }
 
@@ -488,7 +527,7 @@ fn a_chunk_range_round_trips_through_the_session_file() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = SessionStore::for_workspace(dir.path(), "s1");
     store.create().unwrap();
-    let mut state = OmState::from_config(
+    let state = OmState::from_config(
         &crate::config::Om::default(),
         OmRecord {
             buffered_chunks: vec![span("00000001", "00000009")],
