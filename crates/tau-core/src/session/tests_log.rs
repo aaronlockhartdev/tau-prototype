@@ -1,6 +1,7 @@
 use super::*;
 
 use serde_json::json;
+use std::sync::Arc;
 
 /// Three entries written to disk by one store; the returned store is a
 /// fresh handle on the same file that has never been `open`ed
@@ -110,23 +111,25 @@ fn a_cached_read_reflects_a_file_a_second_store_grew() {
     reader.open().unwrap();
 
     // Positive: a store proven at the file's length answers from its mirror
-    // and pays no re-open.
-    let opened = reader.load_seq();
+    // and pays no re-open — the mirror's rows are the same share.
+    let before = reader.skeleton().unwrap().0;
     reader.refresh_if_grown().unwrap();
-    assert_eq!(
-        reader.load_seq(),
-        opened,
+    let after = reader.skeleton().unwrap().0;
+    assert!(
+        Arc::ptr_eq(&before, &after),
         "a store proven at the file's length re-opened: its proof is behind the file"
     );
 
     // Negative: the file grows past the proof — the cached reads take the
-    // grown file, not the mirror that predates it.
+    // grown file, not the mirror that predates it. The rows are the mirror's,
+    // so the re-open shows as a new share.
     let second = writer
         .append(EntryKind::User, json!({ "text": "two" }), Some(&first.id))
         .unwrap();
     reader.refresh_if_grown().unwrap();
+    let grown = reader.skeleton().unwrap().0;
     assert!(
-        reader.load_seq() > opened,
+        !Arc::ptr_eq(&after, &grown),
         "a file that grew past the proof opened no new load"
     );
     assert_eq!(reader.entry_count(), 2);
@@ -156,11 +159,11 @@ fn an_append_proves_the_length_it_writes_including_a_settled_tail() {
     store
         .append(EntryKind::User, json!({ "text": "one" }), None)
         .unwrap();
-    let opened = store.load_seq();
+    let before = store.skeleton().unwrap().0;
     store.refresh_if_grown().unwrap();
-    assert_eq!(
-        store.load_seq(),
-        opened,
+    let after = store.skeleton().unwrap().0;
+    assert!(
+        Arc::ptr_eq(&before, &after),
         "the append left the mirror's proof behind the file: the read re-opened"
     );
 
@@ -173,14 +176,57 @@ fn an_append_proves_the_length_it_writes_including_a_settled_tail() {
     store
         .append(EntryKind::User, json!({ "text": "two" }), None)
         .unwrap();
-    let opened = store.load_seq();
+    let before = store.skeleton().unwrap().0;
     store.refresh_if_grown().unwrap();
-    assert_eq!(
-        store.load_seq(),
-        opened,
+    let after = store.skeleton().unwrap().0;
+    assert!(
+        Arc::ptr_eq(&before, &after),
         "a settled tail left the mirror's proof off the file's length"
     );
     assert_eq!(store.entry_count(), 2, "the settled tail kept a slot");
+}
+
+/// #1F: the skeleton is the mirror's own state. Its rows cover the mirror's
+/// slots one for one, and it names the newest assistant record (the usage a
+/// snapshot reports) — built at the two points the log grows, so no poll
+/// assembles it and no read site validates it.
+#[test]
+fn the_skeleton_rows_are_the_mirrors_slots_and_name_the_last_assistant() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = SessionStore::for_workspace(dir.path(), "s1");
+    store.create().unwrap();
+    store
+        .append(EntryKind::User, json!({ "text": "ask" }), None)
+        .unwrap();
+    let answer = store
+        .append(
+            EntryKind::Assistant,
+            json!({ "text": "answer", "interrupted": false }),
+            None,
+        )
+        .unwrap();
+    store
+        .append(EntryKind::System, json!({ "note": "after" }), None)
+        .unwrap();
+
+    let (rows, last_assistant) = store.skeleton().unwrap();
+    assert_eq!(
+        rows.len(),
+        store.entry_count(),
+        "a slot without a row strands the snapshot's window reads"
+    );
+    assert_eq!(last_assistant.as_deref(), Some(answer.id.as_str()));
+    assert_eq!(rows[1].preview, "answer");
+
+    // The negative: a log with no assistant record answers "none", not the
+    // newest record that happens to be there.
+    let mut plain = SessionStore::for_workspace(dir.path(), "s2");
+    plain.create().unwrap();
+    plain
+        .append(EntryKind::User, json!({ "text": "ask" }), None)
+        .unwrap();
+    let (_, last_assistant) = plain.skeleton().unwrap();
+    assert_eq!(last_assistant, None);
 }
 
 /// The mirror is the file's shape, slot for slot: an append takes one slot,
@@ -238,7 +284,11 @@ fn an_unopened_store_has_no_rows_of_its_own() {
     let (store, ids) = unopened_store_on_a_file(dir.path());
 
     assert_eq!(store.entry_count(), 0, "a cold store reported rows");
-    assert_eq!(store.load_seq(), 0, "a cold store reported a load");
+    assert_eq!(
+        store.skeleton().unwrap().0.len(),
+        3,
+        "a cold store's skeleton read skipped the file"
+    );
     // The reads are the file's, and they carry no mirror line sizes (0 is the
     // file-backed read's answer for a size it did not read).
     let mut seen = Vec::new();

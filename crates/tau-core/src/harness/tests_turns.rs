@@ -318,7 +318,6 @@ async fn a_live_om_run_emits_om_status_events() {
             turn: AtomicBool::new(false),
             provider,
             cwd,
-            skeleton: Mutex::new(Skeleton::default()),
         }),
     );
     core.dispatch(Command::MessageSend {

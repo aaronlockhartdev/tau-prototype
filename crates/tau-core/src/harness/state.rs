@@ -3,8 +3,8 @@
 use super::{
     AgentSession, Arc, AtomicBool, AtomicU64, BTreeMap, ChildProviderFactory, Config,
     ConfigRejection, ConfigState, Duration, Event, HashMap, Lane, MessageLane, Mutex, Ordering,
-    Path, PathBuf, ProtocolError, SessionMeta, Skeleton, SkillInfo, SystemEventKind,
-    TurnProviderRef, Watcher, Weak, Workspace, config, mpsc, skill_info,
+    Path, PathBuf, ProtocolError, SessionMeta, SkillInfo, SystemEventKind, TurnProviderRef,
+    Watcher, Weak, Workspace, config, mpsc, skill_info,
 };
 
 /// The watcher's debounce window (design #30): a save burst (a temp-write
@@ -37,9 +37,6 @@ pub(crate) struct LiveSession {
     /// A child's is the provider its agent has — one object per child (#175).
     pub(crate) provider: TurnProviderRef,
     pub(crate) cwd: PathBuf,
-    /// The snapshot skeleton this session's polls reuse (#316); see
-    /// `super::Skeleton`.
-    pub(crate) skeleton: Mutex<Skeleton>,
 }
 
 /// One open workspace and everything that travels with it (#1A): a fact about a

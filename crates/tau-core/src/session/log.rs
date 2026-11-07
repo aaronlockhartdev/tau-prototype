@@ -12,8 +12,10 @@
 //! name them.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::{Entry, Error, SessionStore, fs};
+use tau_protocol::snapshot::EntryMeta;
 
 /// The mirror of a session file's entries, plus the length it is valid at.
 ///
@@ -22,6 +24,11 @@ use super::{Entry, Error, SessionStore, fs};
 /// re-opens when the file has grown past it, and an append moves `at_len`
 /// with the bytes this store wrote — the length is never a second bookkeeping
 /// line that has to be kept in step by hand.
+///
+/// The snapshot's skeleton (#316) is built here, at the two points the log
+/// grows — `open` reads a whole file into a fresh mirror, the append path
+/// adds the line this store wrote — so its rows cannot describe a file other
+/// than the one the mirror was read from; a poll hands them out as they stand.
 pub(super) struct Loaded {
     at_len: i64,
     ids: HashSet<String>,
@@ -32,6 +39,10 @@ pub(super) struct Loaded {
     /// Each entry line's byte length (a snapshot's `size` field, served
     /// without re-serializing the entry).
     entry_len: Vec<usize>,
+    /// One snapshot metadata row per entry, in the same order.
+    rows: Arc<[EntryMeta]>,
+    /// The log's newest assistant entry, whose usage a snapshot reports.
+    last_assistant: Option<String>,
 }
 
 impl Loaded {
@@ -43,6 +54,8 @@ impl Loaded {
             next: 1,
             entries: Vec::new(),
             entry_len: Vec::new(),
+            rows: Arc::from(Vec::new()),
+            last_assistant: None,
         }
     }
 
@@ -62,6 +75,11 @@ impl Loaded {
         self.entries.len()
     }
 
+    /// The snapshot's rows and the log's newest assistant entry, as the mirror
+    /// stands: a poll of an unchanged log is handed these with no copy.
+    pub(super) fn skeleton(&self) -> (Arc<[EntryMeta]>, Option<String>) {
+        (self.rows.clone(), self.last_assistant.clone())
+    }
     pub(super) fn holds(&self, id: &str) -> bool {
         self.ids.contains(id)
     }
@@ -71,7 +89,7 @@ impl Loaded {
         self.entries.iter().rev().flatten().next()
     }
     /// One entry line's row: its id feeds the mint's counter, its text feeds
-    /// the id set the append guard reads.
+    /// the id set the append guard reads, and it joins the snapshot's rows.
     pub(super) fn push_entry(&mut self, entry: Entry, line_len: usize) {
         // The parse default is 0, and 0 can only lower the counter —
         // never a collision: a minted id is `{:08}` of a u64 (mint_id), so
@@ -81,6 +99,15 @@ impl Loaded {
         // to the mint.
         self.next = self.next.max(entry.id.parse::<u64>().unwrap_or(0) + 1);
         self.ids.insert(entry.id.clone());
+        if entry.kind == tau_protocol::EntryKind::Assistant {
+            self.last_assistant = Some(entry.id.clone());
+        }
+        // The rows ride snapshots as an `Arc`, so a growth is the one copy
+        // that detaches from the shares (#316: an idle poll pays nothing).
+        let size = u64::try_from(line_len).expect("entry line, well under u64::MAX");
+        let mut rows: Vec<EntryMeta> = self.rows.to_vec();
+        rows.push(crate::harness::entry_meta(&entry, size));
+        self.rows = rows.into();
         self.entries.push(Some(entry));
         self.entry_len.push(line_len);
     }
@@ -289,12 +316,22 @@ impl SessionStore {
         self.log.as_ref().map_or(0, Loaded::count)
     }
 
-    /// The store's load generation, bumped by every `open`. A cache of rows
-    /// built from the loaded log keys on it, so rows from one load never
-    /// describe the next file under the same session id (#316).
-    #[must_use]
-    pub const fn load_seq(&self) -> u64 {
-        self.load_seq
+    /// The store's skeleton read (#316, #1F): the mirror's rows where the
+    /// store has one, the file projected in order where it has never read it
+    /// (the file-backed read's line sizes are unknown, so they read 0).
+    pub fn skeleton(&self) -> Result<(Arc<[EntryMeta]>, Option<String>), Error> {
+        if let Some(log) = &self.log {
+            return Ok(log.skeleton());
+        }
+        let mut rows: Vec<EntryMeta> = Vec::new();
+        let mut last_assistant = None;
+        for entry in self.entries_range(0, usize::MAX)? {
+            if entry.kind == tau_protocol::EntryKind::Assistant {
+                last_assistant = Some(entry.id.clone());
+            }
+            rows.push(crate::harness::entry_meta(&entry, 0));
+        }
+        Ok((rows.into(), last_assistant))
     }
 
     /// The in-memory twin of `entry` (the live session's read path).

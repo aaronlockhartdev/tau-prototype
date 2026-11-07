@@ -24,7 +24,7 @@ impl Core {
                 // An external writer (the 10k fixture) grows the file out
                 // from under the log: one re-open keeps the view current.
                 store.refresh_if_grown()?;
-                let projection = project(store, child, &mut live.skeleton.lock())?;
+                let projection = project(store, child)?;
                 let leaf = store.leaf_cached()?;
                 Ok::<_, crate::session::Error>((projection, leaf))
             })
@@ -100,59 +100,19 @@ struct Projection {
     own_state: Option<tau_protocol::SubagentState>,
 }
 
-/// The snapshot skeleton between polls (#316). The metadata rows are a
-/// function of the log's prefix, and the log only grows: a poll builds rows
-/// for the records newer than the last poll and reuses the rest. An idle
-/// poll pays nothing; a poll that saw growth pays the one copy that hands
-/// the wire an immutable share.
-///
-/// `count` is the log slots the rows cover, in `entries_range_cached`'s index
-/// space, and `load_seq` is the store's load generation: rows from one
-/// generation never describe the next file under that session's id.
-#[derive(Default)]
-pub(crate) struct Skeleton {
-    shared: Arc<[EntryMeta]>,
-    count: usize,
-    load_seq: u64,
-    last_assistant: Option<String>,
-}
-
-/// The projection, read from the store's loaded log through `cache`.
-/// Payloads are read only where a fact lives in one: the last assistant
-/// record's usage, and a child's state record from the log's tail.
+/// The projection, read from the store's skeleton (#316): its metadata rows
+/// are the loaded log's own, handed out as an immutable share, so a poll of
+/// an unchanged log copies nothing. Payloads are read only where a fact
+/// lives in one: the last assistant record's usage, and a child's state
+/// record from the log's tail.
 ///
 /// `child` is the header's `parent` flag, taken by the caller so this read
 /// needs no session-meta lock.
-fn project(
-    store: &mut SessionStore,
-    child: bool,
-    cache: &mut Skeleton,
-) -> Result<Projection, crate::session::Error> {
-    let count = store.entry_count();
-    let load_seq = store.load_seq();
-    if cache.load_seq != load_seq || cache.count > count {
-        // A new load generation (the file was re-opened) or fewer slots than
-        // the rows cover: either way the rows describe a different file.
-        cache.shared = Arc::from(Vec::new());
-        cache.count = 0;
-        cache.load_seq = load_seq;
-        cache.last_assistant = None;
-    }
-    if cache.count < count {
-        let mut rows: Vec<EntryMeta> = cache.shared.to_vec();
-        for (entry, size) in store.entries_range_cached(cache.count, usize::MAX)? {
-            if entry.kind == EntryKind::Assistant {
-                cache.last_assistant = Some(entry.id.clone());
-            }
-            rows.push(entry_meta(&entry, size));
-        }
-        cache.shared = rows.into();
-        cache.count = count;
-    }
-    // The usage of the session's last assistant record; the skeleton records
-    // its id as it builds, so no payload is scanned for it.
-    let usage = cache
-        .last_assistant
+fn project(store: &mut SessionStore, child: bool) -> Result<Projection, crate::session::Error> {
+    let (entries, last_assistant) = store.skeleton()?;
+    // The usage of the session's last assistant record; the skeleton names
+    // its id, so no payload is scanned for it.
+    let usage = last_assistant
         .as_deref()
         .and_then(|id| store.entry_cached(id).ok())
         .and_then(|e| e.payload.get("usage").and_then(usage_of));
@@ -168,7 +128,7 @@ fn project(
         None
     };
     Ok(Projection {
-        entries: cache.shared.clone(),
+        entries,
         usage,
         own_state,
     })
@@ -222,9 +182,8 @@ impl Core {
         })?;
         // One open serves the projection: the in-memory log the open just
         // filled, not a second whole-file read.
-        // A closed session keeps no cache: one open serves one projection.
-        let projection = project(&mut store, meta.parent.is_some(), &mut Skeleton::default())
-            .map_err(|e| ProtocolError::Other {
+        let projection =
+            project(&mut store, meta.parent.is_some()).map_err(|e| ProtocolError::Other {
                 message: e.to_string(),
             })?;
         let leaf = store.leaf_cached().map_err(|e| ProtocolError::Other {

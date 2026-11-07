@@ -3,7 +3,7 @@
 use super::{
     AgentSession, Arc, AtomicBool, AtomicU64, BoxedDrive, ChildDriver, ChildProviderFactory,
     Config, ContextMode, Core, Duration, Event, LiveSession, Mutex, Ordering, PipeCounters,
-    ProviderTurn, ReadoptNotice, ReclaimNotice, ResponseRequest, SessionMeta, Skeleton, SkillInfo,
+    ProviderTurn, ReadoptNotice, ReclaimNotice, ResponseRequest, SessionMeta, SkillInfo,
     SpawnNotice, StateNotice, SubagentBridge, SubagentEventKind, SubagentInfo, TurnEvent,
     TurnProvider, TurnProviderRef, TurnSink, Usage, WakeKind, WakeNotice, Weak, mpsc, pipe_send,
     provider, run_turn,
@@ -377,7 +377,6 @@ impl SubagentBridge for SessionSubagentBridge {
             turn: AtomicBool::new(false),
             provider: n.provider.clone(),
             cwd: n.cwd.clone(),
-            skeleton: Mutex::new(Skeleton::default()),
         });
         let id = live.meta.lock().id.clone();
         self.core.sessions.lock().insert(id, live);
