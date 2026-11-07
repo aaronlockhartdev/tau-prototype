@@ -52,6 +52,9 @@ impl Supervisor {
             // resume wakes the turn, so the turn loop starts already-killed
             // and cuts immediately (#208).
             child.agent.send_as(text, lane, source);
+            // The Running record is the resume's commit point: a file that
+            // refuses it leaves the child in the recorded state, and the
+            // resume is a failed command (#3G).
             child.set_state(&ChildState::Running)?;
             child.wake.notify_one();
             self.emit_state(&child, ChildState::Running, Some("resumed".into()), None);
@@ -104,7 +107,14 @@ impl Supervisor {
     fn finish_stop(&self, child: &Arc<Child>, by: StoppedBy) -> Result<String, String> {
         let name = child.name.clone();
         let note = format!("stopped by {}", by.as_str());
-        child.set_state(&ChildState::Stopped { by })?;
+        // The record is the commit point, so a stop whose record is refused is
+        // a failed command, never an ack (#3G). The view still lands terminal
+        // and the drive is woken: this drive is ending, and a child left
+        // asleep holds a concurrency slot, out of reclamation's terminal-only
+        // reach (#250) and never quiescent for the archive. Durable authority
+        // stays the record: a restart reads the pre-stop state, so a refused
+        // stop leaves the child resumable where the file says it rests.
+        let recorded = child.force_state(&ChildState::Stopped { by });
         // The drive ends at its loop head (running: after the interrupted
         // entry lands; parked: it wakes from its sleep and exits).
         child.wake.notify_one();
@@ -118,6 +128,7 @@ impl Supervisor {
             Some(note.clone()),
             resume_contract.clone(),
         );
+        recorded?;
         match resume_contract {
             Some(rc) => Ok(format!(
                 "stopped sub-agent {name}; its plan stays open (resume contract: {})",
@@ -172,8 +183,14 @@ impl Supervisor {
             ChildState::Idle { waiting_on: parked }
         };
         child.set_rest_requested(false);
+        // The record is the commit point: a rest whose record the file refuses
+        // has no durable state, so the observed state is not the child's and
+        // the drive may not sleep on it (the view stays `Running` and the loop
+        // head would drive the child again, forever). The rest is met as a
+        // failure — terminal, view-moved, parent-woken (#3G).
         if let Err(e) = child.set_state(&state) {
-            tracing::warn!("subagent state entry failed: {e}");
+            self.mark_failed(child, e);
+            return;
         }
         self.emit_state(child, state.clone(), Some(final_text.clone()), None);
         let origin = child.origin();
