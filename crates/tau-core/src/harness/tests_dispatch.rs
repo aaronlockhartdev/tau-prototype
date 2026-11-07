@@ -261,8 +261,9 @@ async fn a_project_layer_provider_reaches_a_session_on_the_production_path() {
 }
 
 /// One send makes exactly one provider call on the production path (roadmap G):
-/// the E2E's ghost second assistant entry was not a second call — the count
-/// is the forwarding provider's call list, one id per call's first event.
+/// the E2E's ghost second assistant entry was not a second call — the count is
+/// the call ledger's ends, one per call, read off the `StreamEnd` events the
+/// settlement emits for them.
 #[tokio::test]
 async fn a_production_send_makes_exactly_one_provider_call() {
     let sys = tempfile::tempdir().unwrap();
@@ -291,6 +292,7 @@ async fn a_production_send_makes_exactly_one_provider_call() {
         CommandOutput::Session { session } => session,
         other => panic!("expected a session: {other:?}"),
     };
+    let collected = collect_events(&core);
     let live = core
         .sessions
         .lock()
@@ -314,9 +316,13 @@ async fn a_production_send_makes_exactly_one_provider_call() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let expected = n + 1;
+        let ends = collected
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, Event::StreamEnd { session: s, .. } if *s == session.id))
+            .count();
         assert_eq!(
-            live.provider.call_log().calls.lock().len(),
-            expected,
+            ends, expected,
             "send {expected} made a second provider call"
         );
         // The file is the record: one user + one assistant entry per send.

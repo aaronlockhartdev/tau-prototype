@@ -84,6 +84,8 @@ mod tests_archive_disk;
 #[cfg(test)]
 mod tests_archive_edges;
 #[cfg(test)]
+mod tests_call_ends;
+#[cfg(test)]
 mod tests_child_route;
 #[cfg(test)]
 mod tests_config_boundary;

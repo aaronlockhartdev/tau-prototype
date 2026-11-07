@@ -3,8 +3,8 @@
 //! drains the queue.
 
 use super::{
-    Arc, Core, Entry, Event, LiveSession, Ordering, SessionStore, SystemEventKind, Value,
-    derive_turn, entry_to_view, owner_of, usage_of,
+    Arc, Core, CoreUsage, Entry, Event, LiveSession, Ordering, SessionStore, SystemEventKind,
+    Usage, derive_turn, entry_to_view, owner_of,
 };
 use crate::agent::ContextGate;
 use tau_protocol::{Diagnostic, EntryKind};
@@ -29,6 +29,16 @@ impl Drop for TurnSettleGuard {
 }
 
 impl std::panic::RefUnwindSafe for TurnSettleGuard {}
+
+/// The call ledger's usage as the wire's — the protocol crate is independent
+/// of the core (ADR-0002), so the mapping lives on this side of the seam.
+fn wire_usage(usage: &CoreUsage) -> Usage {
+    Usage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cached_prompt_tokens: usage.cached_input_tokens,
+    }
+}
 
 /// The delta read's failure, named on the GUI's error path — the same shape
 /// `process()`'s own failure rides. The turn's record is unreadable, so its
@@ -140,11 +150,9 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
         }
     };
     // The provider this session's agent calls through is its own, so its call
-    // log is the record of the calls the turn made — read through the trait so
-    // a child's call ids are the child's (#175).
+    // ledger is the record of the calls the turn made — read through the trait
+    // so a child's call ids are the child's (#175).
     let log = live.provider.call_log();
-    let calls_before = log.calls.lock().len();
-
     if let Err(e) = live.agent.process().await {
         core.emit(Event::System {
             workspace: workspace.clone(),
@@ -172,7 +180,6 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
             return;
         }
     };
-    let mut assistant_index = 0usize;
     let mut queue_changed = false;
     for entry in &new {
         match entry.kind {
@@ -182,42 +189,6 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
                 // projected from the queue, so the GUI converges without a
                 // second ledger to remove from.
                 queue_changed = true;
-            }
-            EntryKind::Assistant => {
-                let call_id = log
-                    .calls
-                    .lock()
-                    .get(calls_before + assistant_index)
-                    .cloned();
-                assistant_index += 1;
-                let interrupted = entry
-                    .payload
-                    .get("interrupted")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let usage = entry.payload.get("usage").and_then(usage_of);
-                // #224: the server's decode-window duration, recorded with the
-                // entry at turn settlement, rides the StreamEnd.
-                let duration_secs = entry.payload.get("duration_secs").and_then(Value::as_f64);
-                // A call's end is emitted here, at turn settlement — after
-                // the turn's om_turn_end pass — so `StreamEnd` means the
-                // turn is over and the session accepts a new turn (issue
-                // #82). A stream cut before its Completed frame has the
-                // same shape: the partial stands as an interrupted end
-                // (spec §6/§7).
-                if let Some(call_id) = call_id {
-                    core.emit(Event::StreamEnd {
-                        workspace: workspace.clone(),
-                        session: session.clone(),
-                        call_id,
-                        interrupted,
-                        usage,
-                        duration_secs,
-                    });
-                }
-                if let Some(u) = usage {
-                    live.meta.lock().usage = Some(u);
-                }
             }
             EntryKind::Tool => {
                 // The live hook already upserted this entry; the post-turn
@@ -229,9 +200,15 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
                     entry: entry_to_view(entry),
                 });
             }
+            // An assistant entry implies no stream event of its own: a call's
+            // end is emitted once, from the call ledger, and carries the
+            // facts the entry carries because the ledger recorded them at the
+            // frame that granted them (audit 6B).
+            //
             // Record kinds imply no event here; listed so a new kind forces a
             // decision rather than defaulting silently.
-            EntryKind::System
+            EntryKind::Assistant
+            | EntryKind::System
             | EntryKind::Om
             | EntryKind::Subagent
             | EntryKind::SpawnSnapshot
@@ -250,24 +227,26 @@ pub(crate) async fn run_turn(core: Arc<Core>, live: Arc<LiveSession>) {
         }
     }
 
-    // A call that produced no entry gets its end here: a cut stream is an
-    // interrupted end, a completed empty call a clean one — the GUI's live
-    // bubble must close either way (N10).
-    {
-        let (calls, completed) = (log.calls.lock(), log.completed.lock());
-        let new_calls = calls.len() - calls_before;
-        for i in assistant_index..new_calls {
-            let call_id = calls[calls_before + i].clone();
-            let completed = completed.get(&call_id).copied().unwrap_or(false);
-            core.emit(Event::StreamEnd {
-                workspace: workspace.clone(),
-                session: session.clone(),
-                call_id,
-                interrupted: !completed,
-                usage: None,
-                duration_secs: None,
-            });
+    // Every call the turn started gets its end here, once, in start order —
+    // at turn settlement, after the turn's om_turn_end pass, so `StreamEnd`
+    // means the turn is over and the session accepts a new one (issue #82).
+    // The ledger is the record of the calls, so a call whose response was
+    // content-free (no entry — "no content is no entry") closes the GUI's
+    // live bubble exactly like one that wrote a line, and with its own usage
+    // (N10, audit 6B).
+    for end in log.take_ends() {
+        let usage = end.usage.as_ref().map(wire_usage);
+        if usage.is_some() {
+            live.meta.lock().usage = usage;
         }
+        core.emit(Event::StreamEnd {
+            workspace: workspace.clone(),
+            session: session.clone(),
+            call_id: end.id,
+            interrupted: end.interrupted,
+            usage,
+            duration_secs: end.duration_secs,
+        });
     }
 
     // The active branch is what the loop appended against. The mirror is

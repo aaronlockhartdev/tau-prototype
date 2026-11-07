@@ -2,11 +2,11 @@
 
 use super::{
     AgentSession, Arc, AtomicBool, AtomicU64, BoxedDrive, ChildDriver, ChildProviderFactory,
-    Config, ContextMode, Core, Duration, Event, HashMap, LiveSession, Mutex, Ordering,
-    PipeCounters, ProviderTurn, ReadoptNotice, ReclaimNotice, ResponseRequest, SessionMeta,
-    Skeleton, SkillInfo, SpawnNotice, StateNotice, SubagentBridge, SubagentEventKind, SubagentInfo,
-    TurnEvent, TurnProvider, TurnProviderRef, TurnSink, Usage, WakeKind, WakeNotice, Weak, mpsc,
-    pipe_send, provider, run_turn,
+    Config, ContextMode, Core, Duration, Event, LiveSession, Mutex, Ordering, PipeCounters,
+    ProviderTurn, ReadoptNotice, ReclaimNotice, ResponseRequest, SessionMeta, Skeleton, SkillInfo,
+    SpawnNotice, StateNotice, SubagentBridge, SubagentEventKind, SubagentInfo, TurnEvent,
+    TurnProvider, TurnProviderRef, TurnSink, Usage, WakeKind, WakeNotice, Weak, mpsc, pipe_send,
+    provider, run_turn,
 };
 use crate::config::ProviderRef;
 use std::future::Future;
@@ -26,16 +26,16 @@ pub(crate) struct ForwardingProvider {
     pub(crate) workspace: String,
     pub(crate) session: String,
     pub(crate) call_seq: AtomicU64,
-    /// This session's stream record: the call ids it starts, their completion
-    /// notes, and the one stop flag. It crosses back to the live session
-    /// through `TurnProvider::call_log` — the provider the agent calls and the
+    /// This session's call ledger: one outcome per call it starts, and the
+    /// one stop flag. It crosses back to the live session through
+    /// `TurnProvider::call_log` — the provider the agent calls and the
     /// provider the reconciliation reads are one object (#175).
     log: provider::CallLog,
 }
 
 impl ForwardingProvider {
-    /// The six live dependencies, named; the per-provider call bookkeeping
-    /// (seq, call ids, completion map) is always fresh.
+    /// The six live dependencies, named; the per-provider call ledger is
+    /// always fresh.
     pub(crate) fn new(
         inner: TurnProviderRef,
         tx: mpsc::Sender<Event>,
@@ -51,11 +51,7 @@ impl ForwardingProvider {
             workspace,
             session,
             call_seq: AtomicU64::new(0),
-            log: provider::CallLog {
-                calls: Arc::new(Mutex::new(Vec::new())),
-                completed: Arc::new(Mutex::new(HashMap::new())),
-                stop,
-            },
+            log: provider::CallLog::new(stop),
         }
     }
 }
@@ -104,7 +100,7 @@ impl TurnProvider for ForwardingProvider {
         // Record the call at start, not first event (#67): a call aborted
         // before it emits anything is still a call, and must finalize like
         // any other — a StreamStart now, a StreamEnd at turn settlement.
-        forward.log.calls.lock().push(forward.call_id.clone());
+        forward.log.start(&forward.call_id);
         forward.send(Event::StreamStart {
             workspace: forward.workspace.clone(),
             session: forward.session.clone(),
@@ -112,7 +108,17 @@ impl TurnProvider for ForwardingProvider {
         });
         let inner = self.route.lock().clone();
         let request = request.clone();
-        Box::pin(async move { inner.call(&request, &mut forward).await })
+        let log = self.log.clone();
+        let settled = forward.call_id.clone();
+        Box::pin(async move {
+            let result = inner.call(&request, &mut forward).await;
+            // The call resolved — cleanly, or as the provider error the loop
+            // goes on to handle: its end is now the settlement's to take. A
+            // task torn down mid-await never runs this line, so its end stays
+            // open and the next settlement closes it as an interruption.
+            log.settle(&settled);
+            result
+        })
     }
 }
 
@@ -134,24 +140,29 @@ impl TurnSink for ForwardSink<'_> {
         // growing entry's snapshots (ADR-0008), not channel events.
         // No `StreamEnd` here: the Completed frame ends the call's stream,
         // not the turn — the turn's om_turn_end pass still runs after it.
-        // The end arrives with the post-turn reconciliation, at turn
-        // settlement (issue #82). The `completed` note is the
-        // reconciliation's cut-vs-clean signal for entry-less calls.
+        // The end arrives with the post-turn reconciliation, taken from the
+        // call's ledger entry (issue #82).
         // A stop cuts the stream at the next delta (the loop records the
-        // partial as interrupted, spec §7). Snapshot it before the
-        // completed note: a stop landing with the Completed frame means
-        // the call was cut, so an entry-less one must read interrupted,
-        // not completed, in the reconciliation.
-        let stopped = self.log.stop.load(Ordering::SeqCst);
-        if let TurnEvent::Completed(_, _) = &event
-            && !stopped
-        {
-            self.log.completed.lock().insert(self.call_id.clone(), true);
-        }
-        if stopped {
+        // partial as interrupted, spec §7).
+        if self.log.stop.load(Ordering::SeqCst) {
             return false;
         }
-        self.inner.event(event)
+        // The ledger gains the Completed frame's usage and duration exactly
+        // when the loop's sink accepts them — the same moment they reach the
+        // assistant entry, so the event and the record never disagree (6B). A
+        // refused frame reaches neither, which is the force-kill race: the
+        // frame lands on a stream the loop has already stopped reading.
+        let completed = match &event {
+            TurnEvent::Completed(usage, duration) => {
+                Some((usage.clone(), duration.map(|d| d.as_secs_f64())))
+            }
+            _ => None,
+        };
+        let accepted = self.inner.event(event);
+        if accepted && let Some((usage, duration_secs)) = completed {
+            self.log.complete(&self.call_id, usage, duration_secs);
+        }
+        accepted
     }
     fn stop_signal(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(stop_flag(&self.log.stop))
