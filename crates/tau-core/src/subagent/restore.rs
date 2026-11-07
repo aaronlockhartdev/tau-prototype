@@ -160,14 +160,9 @@ fn state_of(record: Option<&ChildStateRecord>) -> Option<ChildState> {
 /// dropped: re-adopt is terminal-only (design §5).
 ///
 /// A child's minted handle rides the child's own spawn record (#1K), so this
-/// read recovers the address from the child's file: the parent's log is read
-/// by nothing here, and `parent_entries` (threaded by the open path, #280)
-/// reaches the mint seed (`minted_count`), not this projection.
-pub fn disk_children(
-    cwd: &Path,
-    parent: &str,
-    _parent_entries: Option<&[Entry]>,
-) -> Vec<DiskChild> {
+/// read recovers the address from the child's file alone: the parent's log is
+/// read by nothing here.
+pub fn disk_children(cwd: &Path, parent: &str) -> Vec<DiskChild> {
     let mut out: Vec<DiskChild> = Vec::new();
     for m in list_workspace(cwd) {
         if m.archived || m.parent.as_deref() != Some(parent) {

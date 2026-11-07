@@ -73,7 +73,7 @@ fn disk_children_lists_only_terminal_children() {
     let mut sib = SessionStore::for_workspace(dir, "sib");
     sib.create().unwrap();
 
-    let children = restore::disk_children(dir, "p", None);
+    let children = restore::disk_children(dir, "p");
     let mut ids: Vec<String> = children.iter().map(|c| c.child.clone()).collect();
     ids.sort();
     // Only the terminal children (done + stopped): the parked one is a
@@ -113,7 +113,7 @@ fn disk_children_reads_the_minted_handle_from_spawn_records() {
     .unwrap();
     done_child(dir, "child-session", "p");
 
-    let children = restore::disk_children(dir, "p", None);
+    let children = restore::disk_children(dir, "p");
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].child, "child-session");
     // Without a spawn record carrying the child's id, the handle falls back
@@ -161,7 +161,7 @@ fn disk_children_read_the_provenance_of_a_fork_child_from_its_tail() {
     )
     .unwrap();
 
-    let children = restore::disk_children(dir, "p", None);
+    let children = restore::disk_children(dir, "p");
     assert_eq!(children.len(), 1);
     assert_eq!(
         children[0].provenance().0,
@@ -228,7 +228,7 @@ fn a_fork_child_reads_its_own_provenance_not_a_siblings() {
     )
     .unwrap();
 
-    let children = restore::disk_children(dir, "p", None);
+    let children = restore::disk_children(dir, "p");
     assert_eq!(children.len(), 1);
     assert_eq!(
         children[0].provenance().0,
@@ -265,7 +265,7 @@ fn a_state_record_past_the_tail_window_is_no_state_record() {
         );
     }
     assert_eq!(
-        restore::disk_children(dir, "p", None).len(),
+        restore::disk_children(dir, "p").len(),
         1,
         "a full window of records after the state record still reads it"
     );
@@ -278,7 +278,7 @@ fn a_state_record_past_the_tail_window_is_no_state_record() {
     )
     .unwrap();
     assert!(
-        restore::disk_children(dir, "p", None).is_empty(),
+        restore::disk_children(dir, "p").is_empty(),
         "the window is the bound the doc names"
     );
 }
@@ -297,7 +297,7 @@ fn a_running_record_is_not_terminal() {
     state_only_child(dir, "c1", "p", "running", &serde_json::json!({}));
     // A `running` record (a restart artifact) is not terminal: re-adopt
     // refuses it, and `disk_children` drops it.
-    assert!(restore::disk_children(dir, "p", None).is_empty());
+    assert!(restore::disk_children(dir, "p").is_empty());
 }
 
 /// The re-adopt positive path: a reclaimed (terminal) child on disk is

@@ -214,7 +214,7 @@ async fn a_spawn_record_carries_the_handle_the_parent_minted() {
 
     // The child is terminal, so the disk read lists it — with the minted
     // handle off its own record, and the record itself names it.
-    let children = restore::disk_children(dir.path(), "parent", None);
+    let children = restore::disk_children(dir.path(), "parent");
     assert_eq!(children.len(), 1);
     assert_eq!(children[0].child, s.session_id);
     assert_eq!(
@@ -261,7 +261,7 @@ fn a_spawn_record_with_no_handle_decodes_and_keeps_the_session_id_address() {
     )
     .unwrap();
 
-    let children = restore::disk_children(dir.path(), "p", None);
+    let children = restore::disk_children(dir.path(), "p");
     assert_eq!(children.len(), 1);
     let record = children[0]
         .spawn

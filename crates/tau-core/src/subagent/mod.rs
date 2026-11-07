@@ -75,15 +75,11 @@ pub struct Supervisor {
     bridge: Arc<dyn SubagentBridge>,
     driver: Arc<dyn ChildDriver>,
     core: Option<Weak<crate::harness::Core>>,
-    /// The children this session owns, keyed by handle. The one operation
-    /// that needs an `Arc<Supervisor>` — re-adopt, which builds a child's
-    /// `ChildLink` — takes it from the `Arc` the caller holds
-    /// (`self: &Arc<Self>`), so there is no self-reference to store: a stored
-    /// `Weak` is never unresolvable while `&self` lives, and methods that
-    /// cannot upgrade it can never run.
-    /// The parent's in-memory entries (issue #280): lets the fleet view and
-    /// the handle-count seed avoid re-reading the parent's file from disk.
-    parent_entries: Option<Vec<crate::session::Entry>>,
+    // The children map needs no self-reference: the one operation that needs
+    // an `Arc<Supervisor>` — re-adopt, which builds a child's `ChildLink` —
+    // takes it from the `Arc` the caller holds (`self: &Arc<Self>`), so a
+    // stored `Weak` is never unresolvable while `&self` lives, and methods
+    // that cannot upgrade it can never run.
 }
 
 /// The values a session built around this supervisor inherits (the
@@ -197,7 +193,6 @@ impl Supervisor {
             bridge: p.bridge,
             driver: p.driver,
             core: p.core,
-            parent_entries: p.parent_entries,
         })
     }
 
