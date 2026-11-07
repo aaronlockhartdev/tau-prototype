@@ -78,6 +78,16 @@ impl Supervisor {
             .set_parent(&self.parent_session)
             .map_err(|e| format!("subagent_spawn: {e}"))?;
 
+        // The handle is minted before the spawn record is written (#1K): the
+        // record is the child's own copy of the address the parent and the GUI
+        // use, so a restart recovers it from the child's file. Minting it after
+        // the append left the record without an address, and every reader of a
+        // disk child fell back to the session id.
+        let handle = format!(
+            "{}-{}",
+            self.parent_session,
+            self.next.fetch_add(1, Ordering::SeqCst) + 1
+        );
         // The spawn record: the parent link (session id + originating tool
         // call id) is the child's durable provenance (ADR-0001).
         let leaf = store.leaf().map_or(None, |l| l.map(|e| e.id));
@@ -88,6 +98,7 @@ impl Supervisor {
                 context_mode,
                 parent: self.parent_session.clone(),
                 call: call_id.to_owned(),
+                handle: Some(handle.clone()),
             },
         };
         store
@@ -114,11 +125,7 @@ impl Supervisor {
         OmState::from_config(&self.om, record.clone())
             .save(&mut store)
             .map_err(|e| format!("subagent_spawn: {e}"))?;
-        let handle = format!(
-            "{}-{}",
-            self.parent_session,
-            self.next.fetch_add(1, Ordering::SeqCst) + 1
-        );
+        // A child session keeps a readable, unique name in its header (the
         // A child session keeps a readable, unique name in its header (the
         // adjective-noun pair, like a top-level session), so it survives a
         // restart; retry while it collides with a title already on disk in

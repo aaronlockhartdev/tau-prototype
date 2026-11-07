@@ -75,15 +75,11 @@ pub struct Supervisor {
     bridge: Arc<dyn SubagentBridge>,
     driver: Arc<dyn ChildDriver>,
     core: Option<Weak<crate::harness::Core>>,
-    /// The children this session owns, keyed by handle. The one operation
-    /// that needs an `Arc<Supervisor>` — re-adopt, which builds a child's
-    /// `ChildLink` — takes it from the `Arc` the caller holds
-    /// (`self: &Arc<Self>`), so there is no self-reference to store: a stored
-    /// `Weak` is never unresolvable while `&self` lives, and methods that
-    /// cannot upgrade it can never run.
-    /// The parent's in-memory entries (issue #280): lets the fleet view and
-    /// the handle-count seed avoid re-reading the parent's file from disk.
-    parent_entries: Option<Vec<crate::session::Entry>>,
+    // The children map needs no self-reference: the one operation that needs
+    // an `Arc<Supervisor>` — re-adopt, which builds a child's `ChildLink` —
+    // takes it from the `Arc` the caller holds (`self: &Arc<Self>`), so a
+    // stored `Weak` is never unresolvable while `&self` lives, and methods
+    // that cannot upgrade it can never run.
 }
 
 /// The values a session built around this supervisor inherits (the
@@ -197,17 +193,25 @@ impl Supervisor {
             bridge: p.bridge,
             driver: p.driver,
             core: p.core,
-            parent_entries: p.parent_entries,
         })
     }
 
     /// How many child handles this parent has minted across all its
-    /// lives: the count of `subagent_spawn` tool records in its session
-    /// file (one per spawn — a re-open re-reads the same file, so the
-    /// counter is monotonic across re-opens). When the open path has
-    /// already loaded the entries into memory (issue #280) it counts from
-    /// those; otherwise it reads the file. A missing or unreadable file
-    /// seeds at zero (a fresh parent).
+    /// lives, so a re-open never re-mints an address an earlier life handed
+    /// out (#226). Two readings of the durable evidence, the higher one
+    /// winning:
+    ///
+    /// - the parent's `subagent_spawn` tool records, one per spawn it ran —
+    ///   the parent's own log, in memory when the open path loaded it (#280).
+    /// - the mint counters on the handles its children carry (#3H): the
+    ///   child's own spawn record is the durable address, read as the typed
+    ///   record the module owns, not as a name string matched in a payload.
+    ///
+    /// The second is the one that survives a parent log the tool record is
+    /// not in (an interrupted turn, the record written by a lane the tool
+    /// dispatch did not run); the first is the floor for a child whose record
+    /// predates the handle field (#1K) and carries no counter to read. A
+    /// parent with neither seeds at zero.
     fn minted_count(
         cwd: &std::path::Path,
         parent_session: &str,
@@ -222,18 +226,45 @@ impl Supervisor {
                 })
                 .count()
         };
-        if let Some(entries) = entries {
-            return count(entries);
-        }
-        // The whole parent log by design (#302): the cap counts every
-        // `subagent_spawn` record the parent ever wrote, so no window bounds it.
-        let mut store = SessionStore::for_workspace(cwd, parent_session);
-        let Ok(()) = store.open() else {
-            return 0;
+        let from_tool_log = if let Some(entries) = entries {
+            count(entries)
+        } else {
+            // The whole parent log by design (#302): the cap counts every
+            // `subagent_spawn` record the parent ever wrote, so no window
+            // bounds it.
+            let mut store = SessionStore::for_workspace(cwd, parent_session);
+            let Ok(()) = store.open() else {
+                return 0;
+            };
+            store
+                .entries_range(0, usize::MAX)
+                .map_or(0, |entries| count(&entries))
         };
-        store
-            .entries_range(0, usize::MAX)
-            .map_or(0, |entries| count(&entries))
+        from_tool_log.max(Self::highest_mint_on_disk(cwd, parent_session))
+    }
+
+    /// The highest mint counter among the handles this parent's on-disk
+    /// children carry (#3H): each child file is opened once for its head
+    /// window, where a fresh/compacted child's spawn record sits (#302). A
+    /// fork child's record sits at its copied tree's tail and is read by the
+    /// fleet projection (`disk_children`), not here — the tool-record count
+    /// above is that child's floor.
+    fn highest_mint_on_disk(cwd: &std::path::Path, parent_session: &str) -> usize {
+        crate::session::list_workspace(cwd)
+            .into_iter()
+            .filter(|m| m.parent.as_deref() == Some(parent_session))
+            .map(|m| {
+                let mut store = SessionStore::for_workspace(cwd, &m.id);
+                if store.open().is_err() {
+                    return 0;
+                }
+                let Ok(head) = store.entries_range(0, restore::SPAWN_HEAD) else {
+                    return 0;
+                };
+                restore::spawn_record(&head, &[]).map_or(0, |record| record.mint())
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// The inherited bundle (see `Inherited`).
@@ -295,20 +326,13 @@ impl Supervisor {
     }
 
     /// A child's concurrency slot: every child with a live drive holds
-    /// one; a quiescent child (done/stopped/failed — its drive is gone)
-    /// holds none, and a resume of it re-acquires a slot.
+    /// one; a quiescent child (its drive is gone) holds none, and a resume
+    /// of it re-acquires a slot.
     fn live_children(&self) -> Vec<Arc<Child>> {
         self.children
             .lock()
             .values()
-            .filter(|c| {
-                !matches!(
-                    c.state(),
-                    ChildState::Done { .. }
-                        | ChildState::Stopped { .. }
-                        | ChildState::Failed { .. }
-                )
-            })
+            .filter(|c| !c.state().is_terminal())
             .cloned()
             .collect()
     }
@@ -375,7 +399,6 @@ pub struct SubagentInfo {
     pub agent_type: String,
     pub context_mode: ContextMode,
     pub state: ChildState,
-    pub waiting_on: Option<WaitingOn>,
     pub last_message: Option<String>,
     /// The child session's created timestamp (epoch ms): the snapshot's
     /// spawn-order sort key (#226 variant).
@@ -418,6 +441,10 @@ mod tests_notify;
 mod tests_reclaim;
 #[cfg(test)]
 mod tests_spawn_handles;
+#[cfg(test)]
+mod tests_state_commit;
+#[cfg(test)]
+mod tests_state_view;
 #[cfg(test)]
 mod tests_stop_flag;
 #[cfg(test)]

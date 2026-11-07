@@ -82,7 +82,8 @@ pub fn route_parent(sup: &Arc<Supervisor>, tc: &tools::ToolCall) -> Result<Strin
                     Ok(format!(
                         "{name}: {}{} — session {}",
                         info.state.kind(),
-                        info.waiting_on
+                        info.state
+                            .waiting_on()
                             .map(|w| format!(" (waiting on {})", w.as_str()))
                             .unwrap_or_default(),
                         info.child

@@ -47,9 +47,12 @@ impl Supervisor {
     }
 
     pub(super) fn mark_failed(&self, child: &Arc<Child>, reason: String) {
-        // The state entry itself can fail (storage down): nothing further
-        // to do — the in-memory state already says failed.
-        if let Err(e) = child.set_state(&ChildState::Failed {
+        // The drive is ending on this path, so the view must reach the
+        // terminal state even when the record is refused: a `Running` view has
+        // no drive behind it, holds a concurrency slot, and is out of
+        // reclamation's terminal-only reach (#250). The failure is logged, not
+        // returned — the caller is already on the failure path.
+        if let Err(e) = child.force_state(&ChildState::Failed {
             reason: reason.clone(),
         }) {
             tracing::warn!("subagent state entry failed: {e}");

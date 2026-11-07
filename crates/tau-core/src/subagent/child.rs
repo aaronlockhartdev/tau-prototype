@@ -60,8 +60,11 @@ impl Child {
         self.state.lock().clone()
     }
 
+    /// Record the state, then move the live view onto it. The append is the
+    /// commit point: a record the file refuses leaves the view at the state a
+    /// record did make, and the `Err` reaches the caller — the tool's caller
+    /// is the party that can act on storage being down (#3G).
     pub(super) fn set_state(&self, state: &ChildState) -> Result<(), String> {
-        *self.state.lock() = state.clone();
         // The record carries the discriminant plus the non-output variant
         // fields only: done's output lives in the notify record (the
         // report), not twice.
@@ -70,7 +73,23 @@ impl Child {
         };
         self.agent
             .append_entry(EntryKind::Subagent, record.to_value())
-            .map_err(|e| format!("subagent state entry failed: {e}"))
+            .map_err(|e| format!("subagent state entry failed: {e}"))?;
+        *self.state.lock() = state.clone();
+        Ok(())
+    }
+
+    /// The drive-ending paths (the stop's tail, the observed failure): the
+    /// view moves onto the state and the record is attempted, its `Err`
+    /// returned for the caller to report. A view left behind a drive that has
+    /// ended holds a concurrency slot, stays out of reclamation's
+    /// terminal-only reach (#250), and never reports quiescence to the
+    /// archive. Durable authority stays the record: a restart reads the state
+    /// the file did write, so a refused record leaves the child resumable
+    /// there.
+    pub(super) fn force_state(&self, state: &ChildState) -> Result<(), String> {
+        let recorded = self.set_state(state);
+        *self.state.lock() = state.clone();
+        recorded
     }
 
     pub(super) fn set_last_message(&self, text: &str) {
