@@ -136,6 +136,7 @@ fn newest<T>(entries: &[Entry], arm: impl Fn(SubagentRecord) -> Option<T>) -> Op
 }
 
 /// The recorded state as the live enum: the record owns the reason and the
+/// The recorded state as the live enum: the record owns the reason and the
 /// stopper, and its `done` carries no output (the notify record owns that).
 fn state_of(record: Option<&ChildStateRecord>) -> Option<ChildState> {
     Some(match record? {

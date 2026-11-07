@@ -202,12 +202,21 @@ impl Supervisor {
     }
 
     /// How many child handles this parent has minted across all its
-    /// lives: the count of `subagent_spawn` tool records in its session
-    /// file (one per spawn — a re-open re-reads the same file, so the
-    /// counter is monotonic across re-opens). When the open path has
-    /// already loaded the entries into memory (issue #280) it counts from
-    /// those; otherwise it reads the file. A missing or unreadable file
-    /// seeds at zero (a fresh parent).
+    /// lives, so a re-open never re-mints an address an earlier life handed
+    /// out (#226). Two readings of the durable evidence, the higher one
+    /// winning:
+    ///
+    /// - the parent's `subagent_spawn` tool records, one per spawn it ran —
+    ///   the parent's own log, in memory when the open path loaded it (#280).
+    /// - the mint counters on the handles its children carry (#3H): the
+    ///   child's own spawn record is the durable address, read as the typed
+    ///   record the module owns, not as a name string matched in a payload.
+    ///
+    /// The second is the one that survives a parent log the tool record is
+    /// not in (an interrupted turn, the record written by a lane the tool
+    /// dispatch did not run); the first is the floor for a child whose record
+    /// predates the handle field (#1K) and carries no counter to read. A
+    /// parent with neither seeds at zero.
     fn minted_count(
         cwd: &std::path::Path,
         parent_session: &str,
@@ -222,18 +231,45 @@ impl Supervisor {
                 })
                 .count()
         };
-        if let Some(entries) = entries {
-            return count(entries);
-        }
-        // The whole parent log by design (#302): the cap counts every
-        // `subagent_spawn` record the parent ever wrote, so no window bounds it.
-        let mut store = SessionStore::for_workspace(cwd, parent_session);
-        let Ok(()) = store.open() else {
-            return 0;
+        let from_tool_log = if let Some(entries) = entries {
+            count(entries)
+        } else {
+            // The whole parent log by design (#302): the cap counts every
+            // `subagent_spawn` record the parent ever wrote, so no window
+            // bounds it.
+            let mut store = SessionStore::for_workspace(cwd, parent_session);
+            let Ok(()) = store.open() else {
+                return 0;
+            };
+            store
+                .entries_range(0, usize::MAX)
+                .map_or(0, |entries| count(&entries))
         };
-        store
-            .entries_range(0, usize::MAX)
-            .map_or(0, |entries| count(&entries))
+        from_tool_log.max(Self::highest_mint_on_disk(cwd, parent_session))
+    }
+
+    /// The highest mint counter among the handles this parent's on-disk
+    /// children carry (#3H): each child file is opened once for its head
+    /// window, where a fresh/compacted child's spawn record sits (#302). A
+    /// fork child's record sits at its copied tree's tail and is read by the
+    /// fleet projection (`disk_children`), not here — the tool-record count
+    /// above is that child's floor.
+    fn highest_mint_on_disk(cwd: &std::path::Path, parent_session: &str) -> usize {
+        crate::session::list_workspace(cwd)
+            .into_iter()
+            .filter(|m| m.parent.as_deref() == Some(parent_session))
+            .map(|m| {
+                let mut store = SessionStore::for_workspace(cwd, &m.id);
+                if store.open().is_err() {
+                    return 0;
+                }
+                let Ok(head) = store.entries_range(0, restore::SPAWN_HEAD) else {
+                    return 0;
+                };
+                restore::spawn_record(&head, &[]).map_or(0, |record| record.mint())
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// The inherited bundle (see `Inherited`).

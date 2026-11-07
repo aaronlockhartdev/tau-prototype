@@ -15,6 +15,37 @@ async fn sup_spawn_from_parent(sup: &Arc<Supervisor>) {
     parent.process().await.unwrap();
 }
 
+/// A second supervisor over the same parent session — the parent's next
+/// life, with no entries threaded through (the disk is its only evidence).
+fn re_opened(
+    dir: &std::path::Path,
+    bridge: Arc<TestBridge>,
+    factory: Arc<CannedFactory>,
+    parent: &Arc<AgentSession>,
+) -> Arc<Supervisor> {
+    let sup = Supervisor::new(SupervisorParams {
+        parent_session: "parent".into(),
+        cwd: dir.to_path_buf(),
+        provider: factory,
+        model: "test-model".into(),
+        system_prompt: "be terse".into(),
+        om: Om::default(),
+        tool_batch_on_force: ToolBatchPolicy::Complete,
+        turn: TurnConfig::default(),
+        gates: None,
+        hashline: crate::hashline::pin_store::GcPolicy::default(),
+        caps: SubAgents::default(),
+        depth: 0,
+        types: vec![crate::agent_type::builtin_general()],
+        bridge,
+        driver: Arc::new(TestDriver),
+        core: None,
+        parent_entries: None,
+    });
+    sup.attach_parent(parent);
+    sup
+}
+
 /// A re-opened parent session must not re-mint a child handle an earlier
 /// life already used (ticket #226): the GUI keys its roster rows by
 /// handle, so a re-minted handle for a NEW child collides with a row the
@@ -60,26 +91,7 @@ async fn a_reopened_parent_does_not_remint_a_child_handle() {
     // Life 2: the session re-opens; a fresh supervisor adopts the same
     // parent session (the harness launch does this: the supervisor
     // adopts the parent's agent).
-    let sup2 = Supervisor::new(SupervisorParams {
-        parent_session: "parent".into(),
-        cwd: dir.path().to_path_buf(),
-        provider: factory.clone(),
-        model: "test-model".into(),
-        system_prompt: "be terse".into(),
-        om: Om::default(),
-        tool_batch_on_force: ToolBatchPolicy::Complete,
-        turn: TurnConfig::default(),
-        gates: None,
-        hashline: crate::hashline::pin_store::GcPolicy::default(),
-        caps: SubAgents::default(),
-        depth: 0,
-        types: vec![crate::agent_type::builtin_general()],
-        bridge: bridge.clone(),
-        driver: Arc::new(TestDriver),
-        core: None,
-        parent_entries: None,
-    });
-    sup2.attach_parent(&parent);
+    let sup2 = re_opened(dir.path(), bridge, factory, &parent);
     let s3 = sup2
         .spawn("general", "third", Some(ContextMode::Fresh), "c3")
         .unwrap();
@@ -92,6 +104,90 @@ async fn a_reopened_parent_does_not_remint_a_child_handle() {
     assert_ne!(s3.handle, "parent-2");
     // Monotonic: a re-opened counter continues, it does not restart.
     assert_eq!(s3.handle, "parent-3");
+}
+
+/// The mint seed reads the handles the parent's children carry, not a tool
+/// record's name string (#3H). The GUI's `subagent_spawn` command calls the
+/// supervisor directly, so the parent's log names neither spawn — the durable
+/// evidence is the minted handle on each child's own record, and a re-opened
+/// supervisor mints past it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mint_seed_reads_the_handles_the_children_carry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sup, bridge, factory, parent) = harness_full(
+        dir.path(),
+        vec![sse("x", &[])],
+        vec![vec![sse("", &[])]],
+        vec![Duration::ZERO],
+        SubAgents::default(),
+    );
+    let first = sup
+        .spawn("general", "a", Some(ContextMode::Fresh), "gui")
+        .unwrap();
+    let second = sup
+        .spawn("general", "b", Some(ContextMode::Fresh), "gui")
+        .unwrap();
+    assert_eq!(first.handle, "parent-1");
+    assert_eq!(second.handle, "parent-2");
+    let mut pstore = SessionStore::for_workspace(dir.path(), "parent");
+    pstore.open().unwrap();
+    let tool_records = pstore
+        .entries_range(0, usize::MAX)
+        .unwrap()
+        .iter()
+        .filter(|e| e.kind == EntryKind::Tool && e.payload["name"] == json!("subagent_spawn"))
+        .count();
+    assert_eq!(tool_records, 0, "the parent's log names neither spawn");
+
+    // Life 2, no threaded entries: the children's records are the seed.
+    let sup2 = re_opened(dir.path(), bridge, factory, &parent);
+    let third = sup2
+        .spawn("general", "c", Some(ContextMode::Fresh), "gui")
+        .unwrap();
+    assert_eq!(
+        third.handle, "parent-3",
+        "the seed followed the children's minted handles, not the empty tool log"
+    );
+}
+
+/// The negative (#3H): a child whose record predates the handle field (#1K)
+/// carries no counter to read, and a parent log with no tool record names
+/// none — with no durable counter at all, the mint starts at 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_child_record_with_no_handle_contributes_nothing_to_the_seed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_sup, bridge, factory, parent) = harness_full(
+        dir.path(),
+        vec![sse("x", &[])],
+        vec![vec![sse("", &[])]],
+        vec![Duration::ZERO],
+        SubAgents::default(),
+    );
+    let mut c = SessionStore::for_workspace(dir.path(), "old-child");
+    c.create().unwrap();
+    c.set_parent("parent").unwrap();
+    c.append(
+        EntryKind::Subagent,
+        json!({
+            "event": "spawn",
+            "type": "general",
+            "brief": "b",
+            "context_mode": "fresh",
+            "parent": "parent",
+            "call": "c1"
+        }),
+        None,
+    )
+    .unwrap();
+
+    let sup2 = re_opened(dir.path(), bridge, factory, &parent);
+    let minted = sup2
+        .spawn("general", "a", Some(ContextMode::Fresh), "gui")
+        .unwrap();
+    assert_eq!(
+        minted.handle, "parent-1",
+        "no durable counter, so the mint starts where a fresh parent starts"
+    );
 }
 
 /// The spawn record carries the handle the parent minted (#1K), so a child's
@@ -178,6 +274,7 @@ fn a_spawn_record_with_no_handle_decodes_and_keeps_the_session_id_address() {
         "a child with no handle on record keeps its session id as address"
     );
 }
+
 /// The seed scans the parent's session file for spawn records; a fresh
 /// parent (one spawn) counts from one, and the spawn is recorded as a
 /// `subagent_spawn` tool entry — the seed's source.

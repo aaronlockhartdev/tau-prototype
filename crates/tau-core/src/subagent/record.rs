@@ -50,6 +50,28 @@ pub struct SpawnRecord {
     pub handle: Option<String>,
 }
 
+/// The mint counter a handle carries (`{parent}-{n}` → `n`): the parent's
+/// cursor position, the evidence a re-opened parent seeds its mint from
+/// (#226, #3H). 0 names no counter — a session-id address, the shape a record
+/// predating `handle` leaves (#1K).
+#[must_use]
+pub fn mint_counter(handle: &str) -> usize {
+    handle
+        .rsplit('-')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+impl SpawnRecord {
+    /// The parent's cursor position this child's handle names: `mint_counter`
+    /// over the handle, 0 when the record carries none.
+    #[must_use]
+    pub fn mint(&self) -> usize {
+        self.handle.as_deref().map_or(0, mint_counter)
+    }
+}
+
 /// The child's record of a note to its parent (`parent_notify`): the text,
 /// and the completion declaration — `done` with its object `output`, or a
 /// rest that names its declared wait target (spec §5.2: the declaration is a
