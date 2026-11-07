@@ -7,21 +7,22 @@ use std::time::Duration;
 
 use super::{
     Arc, AtomicBool, FunctionCall, Future, Pin, Provider, ProviderError, Requests, ResponseRequest,
-    StreamOutcome, TurnEvent, TurnResult, TurnSink, decode_stream, fold_event, stream_turn,
+    StreamOutcome, TurnEvent, TurnResult, TurnSink, Usage, decode_stream, fold_event, stream_turn,
 };
 /// The loop's provider seam (spec §6): a turn is a request in, a result out,
 /// with every stream delta forwarded to the sink on the way — the live path
 /// and the canned test path share this contract (ticket #19).
 pub type ProviderTurn<'a> =
     Pin<Box<dyn Future<Output = Result<TurnResult, ProviderError>> + Send + 'a>>;
-
-/// What a session's provider records about the streams it started: the call
-/// ids in order, which of them saw their `Completed` frame, and the one stop
-/// flag that cuts them.
+/// What a session's provider records about the streams it started: one
+/// outcome per call, plus the one stop flag that cuts them.
 ///
-/// The post-turn reconciliation diffs a turn's assistant entries against the
-/// ids (the kth entry is the kth call) and reads the completion note as the
-/// cut-vs-clean signal for an entry-less call (issue #82, N10).
+/// The ledger is the record of the calls themselves — appended when a call
+/// starts, finalised when its future resolves — so the post-turn
+/// reconciliation emits one `StreamEnd` per call from the same facts the
+/// assistant entry carries (issue #82, N10, audit 6B). A call whose response
+/// is content-free records no entry (no content is no entry); its end, and
+/// its usage, come from here.
 ///
 /// It is reached through `TurnProvider::call_log` because a live session holds
 /// its provider as a trait object, and that provider is the same object its
@@ -31,17 +32,106 @@ pub type ProviderTurn<'a> =
 /// fresh log, so a session running against one has no calls to reconcile.
 #[derive(Clone, Default)]
 pub struct CallLog {
-    /// Call ids in start order; a turn diffs its assistant entries against
-    /// this (the kth entry in a turn is the kth call).
-    pub calls: Arc<parking_lot::Mutex<Vec<String>>>,
-    /// Calls whose `Completed` frame was seen: the post-turn diff uses this
-    /// to tell a cut empty partial (interrupted end) from a completed empty
-    /// call (clean end).
-    pub completed: Arc<parking_lot::Mutex<std::collections::HashMap<String, bool>>>,
+    /// The calls this provider started, in start order, each with what its
+    /// stream has told it so far.
+    ends: Arc<parking_lot::Mutex<Vec<OpenCall>>>,
     /// The session's stop flag, the one the spawn mints and hands to the
     /// agent too (#2B): the sink cuts the stream on it, so the flag the user's
     /// stop writes is the flag the transport reads.
     pub stop: Arc<AtomicBool>,
+}
+
+/// One call's ledger entry, before its end is taken.
+#[derive(Debug)]
+struct OpenCall {
+    id: String,
+    /// The user cut this call (the agent stamps it from the same fact the
+    /// assistant entry carries — `stop`, a force send, a closed session).
+    cut_by_user: bool,
+    /// The `Completed` frame's usage and decode-window duration: recorded
+    /// exactly when the agent's own sink accepts that frame, which is the
+    /// moment the entry gains them. A cut stream records neither.
+    usage: Option<Usage>,
+    duration_secs: Option<f64>,
+    /// The call's future resolved (cleanly or as an error). Unresolved means
+    /// the call was torn down mid-flight — the task died — and its next
+    /// settlement closes it as an interruption.
+    settled: bool,
+}
+
+/// The outcome of one call, as the ledger hands it to the reconciliation:
+/// the same facts the durable assistant record carries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallEnd {
+    pub id: String,
+    pub interrupted: bool,
+    pub usage: Option<Usage>,
+    pub duration_secs: Option<f64>,
+}
+
+impl CallLog {
+    /// The ledger of a session's forwarding seam: its own stop flag, shared
+    /// with the agent that cuts the stream on it (#2B).
+    #[must_use]
+    pub fn new(stop: Arc<AtomicBool>) -> Self {
+        Self {
+            ends: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            stop,
+        }
+    }
+
+    /// A call starts. Its `StreamStart` has been sent; its end is owed.
+    pub fn start(&self, id: &str) {
+        self.ends.lock().push(OpenCall {
+            id: id.to_owned(),
+            cut_by_user: false,
+            usage: None,
+            duration_secs: None,
+            settled: false,
+        });
+    }
+
+    /// The `Completed` frame's facts, recorded as the agent's sink accepts
+    /// them — the ledger never knows more than the record.
+    pub fn complete(&self, id: &str, usage: Usage, duration_secs: Option<f64>) {
+        if let Some(call) = self.ends.lock().iter_mut().rev().find(|c| c.id == id) {
+            call.usage = Some(usage);
+            call.duration_secs = duration_secs;
+        }
+    }
+
+    /// The user cut the call this session is on: the agent stamps the fact
+    /// the assistant entry carries onto the newest end, so the event and the
+    /// record cannot disagree (a force send's flag is invisible to the seam).
+    pub fn mark_user_cut(&self) {
+        if let Some(call) = self.ends.lock().last_mut() {
+            call.cut_by_user = true;
+        }
+    }
+
+    /// The call's future resolved: the ledger now knows the stream is over,
+    /// however it ended.
+    pub fn settle(&self, id: &str) {
+        if let Some(call) = self.ends.lock().iter_mut().rev().find(|c| c.id == id) {
+            call.settled = true;
+        }
+    }
+
+    /// Take every call's end, oldest first: the reconciliation's emission
+    /// order. A call torn down mid-flight (unsettled) is an interruption —
+    /// the turn that started it is gone and nothing else will close it.
+    #[must_use]
+    pub fn take_ends(&self) -> Vec<CallEnd> {
+        let mut ends = self.ends.lock();
+        ends.drain(..)
+            .map(|c| CallEnd {
+                id: c.id,
+                interrupted: c.cut_by_user || !c.settled,
+                usage: c.usage,
+                duration_secs: c.duration_secs,
+            })
+            .collect()
+    }
 }
 
 pub trait TurnProvider: Send + Sync {

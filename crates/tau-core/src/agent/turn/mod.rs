@@ -178,6 +178,13 @@ impl AgentSession {
                 || self.kill.load(Ordering::SeqCst)
                 || self.stop.load(Ordering::SeqCst)
                 || self.closed.load(Ordering::SeqCst);
+            // The stream's end carries the same interruption the entry
+            // carries: a force send cuts on the loop's own kill flag, which
+            // the forwarding seam never sees, so the seam cannot derive this
+            // fact and the ledger takes it from here (6B).
+            if cut_by_user {
+                self.provider.call_log().mark_user_cut();
+            }
             self.append_assistant(&entry_id, &result, cut_by_user)?;
             if let Some(ended_by) = reported_cutoff(result.outcome, cut_by_user) {
                 self.diagnostic(&Diagnostic::TurnCutoff {
