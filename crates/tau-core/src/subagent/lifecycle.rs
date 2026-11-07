@@ -33,12 +33,10 @@ impl Supervisor {
             // Resume from any non-running state (ADR-0001 supplement:
             // all non-running states are deliberately resumable; the
             // only asymmetry is the provenance the stop recorded).
-            let was_quiescent = matches!(
-                *child.state.lock(),
-                ChildState::Stopped { .. } | ChildState::Failed { .. } | ChildState::Done { .. }
-            );
-            // A quiescent child holds no slot; the resume re-acquires
-            // one against the cap.
+            // A quiescent child (the terminal states) holds no slot; the
+            // resume re-acquires one against the cap, and starts a drive
+            // where the ended one left none.
+            let was_quiescent = child.state.lock().is_terminal();
             if was_quiescent {
                 self.check_cap(true)?;
             }
@@ -203,18 +201,14 @@ impl Supervisor {
             }
             // An autonomous pause wakes the delegating parent (the child
             // names what it has / needs in the final output); a reply to a
-            // direct message stays silent — the sender is engaged.
-            ChildState::Idle { .. } if origin == TurnOrigin::Spawn => {
-                self.emit_wake(child, WakeKind::Waiting, final_text, Some(parked), None);
-            }
-            ChildState::Awaiting if origin == TurnOrigin::Spawn => {
-                // A rest that ends on a question is parked on the human: the
-                // wake states the target the `awaiting` state implies.
+            // direct message stays silent — the sender is engaged. The wake
+            // states the target the resting state carries (#368).
+            ChildState::Idle { .. } | ChildState::Awaiting if origin == TurnOrigin::Spawn => {
                 self.emit_wake(
                     child,
                     WakeKind::Waiting,
                     final_text,
-                    Some(WaitingOn::User),
+                    state.waiting_on(),
                     None,
                 );
             }

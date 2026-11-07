@@ -1,4 +1,4 @@
-use super::{ChildState, SessionStore, SubagentInfo, Supervisor, TurnUsage, WaitingOn};
+use super::{SessionStore, SubagentInfo, Supervisor, TurnUsage};
 use crate::om;
 use crate::om_integration::OmState;
 use crate::session::Entry;
@@ -27,12 +27,6 @@ impl Supervisor {
     /// disk, so it takes the `Arc` this supervisor is owned by.
     pub fn state_info(self: &Arc<Self>, name_or_id: &str) -> Option<SubagentInfo> {
         let child = self.resolve(name_or_id)?;
-        let (state, waiting_on) = match child.state() {
-            ChildState::Idle { waiting_on } => (ChildState::Idle { waiting_on }, Some(waiting_on)),
-            // The `QUESTION:` marker: the child is asking the user.
-            ChildState::Awaiting => (ChildState::Awaiting, Some(WaitingOn::User)),
-            other => (other, None),
-        };
         let usage = {
             let mut store = SessionStore::for_workspace(&self.cwd, &child.session_id);
             store.open().ok().and_then(|()| {
@@ -57,8 +51,7 @@ impl Supervisor {
             child: child.session_id.clone(),
             agent_type: child.agent_type.clone(),
             context_mode: child.context_mode,
-            state,
-            waiting_on,
+            state: child.state(),
             last_message: child.last_message.lock().clone(),
             created: child.agent.store_created(),
             usage,

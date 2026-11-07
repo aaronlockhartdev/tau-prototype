@@ -331,20 +331,13 @@ impl Supervisor {
     }
 
     /// A child's concurrency slot: every child with a live drive holds
-    /// one; a quiescent child (done/stopped/failed — its drive is gone)
-    /// holds none, and a resume of it re-acquires a slot.
+    /// one; a quiescent child (its drive is gone) holds none, and a resume
+    /// of it re-acquires a slot.
     fn live_children(&self) -> Vec<Arc<Child>> {
         self.children
             .lock()
             .values()
-            .filter(|c| {
-                !matches!(
-                    c.state(),
-                    ChildState::Done { .. }
-                        | ChildState::Stopped { .. }
-                        | ChildState::Failed { .. }
-                )
-            })
+            .filter(|c| !c.state().is_terminal())
             .cloned()
             .collect()
     }
@@ -411,7 +404,6 @@ pub struct SubagentInfo {
     pub agent_type: String,
     pub context_mode: ContextMode,
     pub state: ChildState,
-    pub waiting_on: Option<WaitingOn>,
     pub last_message: Option<String>,
     /// The child session's created timestamp (epoch ms): the snapshot's
     /// spawn-order sort key (#226 variant).
@@ -456,6 +448,8 @@ mod tests_reclaim;
 mod tests_spawn_handles;
 #[cfg(test)]
 mod tests_state_commit;
+#[cfg(test)]
+mod tests_state_view;
 #[cfg(test)]
 mod tests_stop_flag;
 #[cfg(test)]

@@ -90,6 +90,20 @@ impl ChildState {
             Self::Stopped { .. } => "stopped",
         }
     }
+    /// Where the state parks the child: an `idle` carries its target, and a
+    /// rest that ends on a question (`awaiting`) is parked on the human —
+    /// #368 settled that reading, and the wake states it so the GUI's bell
+    /// infers nothing. A state that parks the child nowhere (running, or any
+    /// terminal one) names none.
+    #[must_use]
+    pub const fn waiting_on(&self) -> Option<WaitingOn> {
+        match self {
+            Self::Idle { waiting_on } => Some(*waiting_on),
+            Self::Awaiting => Some(WaitingOn::User),
+            _ => None,
+        }
+    }
+
     /// A terminal lifecycle state (`Done`/`Failed`/`Stopped`): the child's
     /// drive has ended and it holds no live interaction — reclaimable by
     /// the fleet's reclamation (#250). `Running`/`Idle`/`Awaiting` are not.
