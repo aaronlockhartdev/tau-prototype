@@ -447,32 +447,33 @@ impl AgentSession {
                 .iter()
                 .flat_map(|e| input_items(std::slice::from_ref(e), parent_session.as_deref()))
                 .collect();
-            // The leading items the OM state contributed: the prompt estimate
-            // fingerprints `items[..om_items]`, so the anchor rides the
-            // anchored prefix, not the priced tail.
-            let om_items = anchor.len() + assembled.om_input_items.len();
+            // The leading items the OM state contributed — the anchored prefix
+            // plus the observation items — counted so `Assembled::new` digests
+            // exactly that prefix: the anchor's guard is a number, and pricing
+            // a prompt never re-serializes the log the request already carried.
+            let om_prefix = anchor.len() + assembled.om_input_items.len();
             let items = anchor
                 .into_iter()
                 .chain(assembled.om_input_items)
                 .chain(input_items(&window.tail, parent_session.as_deref()))
                 .collect();
-            Ok(Assembled {
+            Ok(Assembled::new(
                 model,
-                instructions: with_plan_state(assembled.instructions, plan_state),
+                with_plan_state(assembled.instructions, plan_state),
                 items,
                 entries,
-                om_items,
+                om_prefix,
                 parent_session,
-            })
+            ))
         } else {
-            Ok(Assembled {
+            Ok(Assembled::new(
                 model,
-                instructions: with_plan_state(base, plan_state),
-                items: input_items(&entries, parent_session.as_deref()),
+                with_plan_state(base, plan_state),
+                input_items(&entries, parent_session.as_deref()),
                 entries,
-                om_items: 0,
+                0,
                 parent_session,
-            })
+            ))
         }
     }
 
