@@ -12,7 +12,7 @@ import type { SessionState } from '../rules/sessions';
 import type { FilesCache } from '../rules/files';
 import type { PaneState } from '../rules/panes';
 import type { OpenFiles } from '../rules/openfiles';
-
+import type { Docs } from '../rules/activedoc';
 export function defaultStore() {
   return {
     focus: false,
@@ -75,14 +75,15 @@ export function defaultStore() {
     // The file viewer (open-files model): a persistent, per-workspace set of
     // open files (closable tabs), independent of git status. The center column
     // toggles between the transcript and the viewer (pane.center); open files
-    // survive a switch to the transcript. activeFile* is the shown tab: a null
-    // New is "loading", a set Error is a real reason (binary / unreadable), ''
-    // is an empty file.
+    // survive a switch to the transcript. `activeFile` is the shown tab; `docs`
+    // is the shown content: one document per tab, keyed by the request's target
+    // (rules/activedoc), so a tab switch shows the new tab (a tab with no
+    // document is "loading") and a response writes the tab that asked for it.
+    // A document's `error` is a real reason (binary / unreadable); '' is an
+    // empty file.
     openFiles: {} as OpenFiles,
     activeFile: null as { workspace: string; path: string } | null,
-    activeFileNew: null as string | null,
-    activeFileBase: null as string | null,
-    activeFileError: null as string | null,
+    docs: {} as Docs,
     // Per-tab isolation (spec §9): each open workspace owns its pane view
     // state; the transcript's conversation state stays per-session.
     pane: {} as Record<string, PaneState>,

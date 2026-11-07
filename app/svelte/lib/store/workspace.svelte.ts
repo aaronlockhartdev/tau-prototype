@@ -17,7 +17,7 @@ import { ensureWorkspace, removeWorkspace } from '../rules/files';
 import { applyTabSelect } from '../rules/panes';
 import { clearError, store } from './state.svelte';
 import { fetchDir, refreshGitStatus } from './files-pane.svelte';
-import { resetActiveFile } from './viewer.svelte';
+import { dropWorkspaceDocs } from '../rules/activedoc';
 
 /** Connect: list workspaces, then open the first (or the ?workspace= one). */
 export async function init(): Promise<void> {
@@ -188,10 +188,11 @@ export async function closeWorkspace(ws: Workspace, redirect = true): Promise<vo
   }
   store.files = removeWorkspace(store.files, ws.id);
   // The closed workspace's open files (and the active file, if it pointed
-  // here) are dead with it.
+  // here) are dead with it, documents included.
   delete store.openFiles[ws.id];
+  store.docs = dropWorkspaceDocs(store.docs, ws.id);
   if (store.activeFile?.workspace === ws.id) {
-    resetActiveFile();
+    store.activeFile = null;
   }
   store.workspaces = store.workspaces.filter((w) => w.id !== ws.id);
   for (const [sid, s] of Object.entries(store.sessions)) {

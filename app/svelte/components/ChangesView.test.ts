@@ -29,14 +29,23 @@ vi.mock('../lib/display/highlight', () => ({
 const WS = 'w1';
 const user = userEvent.setup();
 
+// A tab's document, as the keyed record keeps it (rules/activedoc): the
+// generation is the tab's current issue, so a seeded document reads as read.
+function doc(text: string | null, base: string | null, error: string | null = null) {
+  return { text, base, error, gen: 1 };
+}
+
+// The key of a tab in this workspace (rules/activedoc's docKey shape).
+function key(p: string): string {
+  return `${WS}\n${p}`;
+}
+
 // Open a single file with a given current + base (git) content.
 function seedOpen(p: string, next: string, base: string): void {
   resetMockStore({
     openFiles: { [WS]: [{ path: p, ignored: false, size: next.length }] },
     activeFile: { workspace: WS, path: p },
-    activeFileNew: next,
-    activeFileBase: base,
-    activeFileError: null
+    docs: { [key(p)]: doc(next, base) }
   });
 }
 
@@ -49,9 +58,7 @@ function seedTwo(): void {
       ]
     },
     activeFile: { workspace: WS, path: 'src/a.ts' },
-    activeFileNew: 'x',
-    activeFileBase: 'y',
-    activeFileError: null
+    docs: { [key('src/a.ts')]: doc('x', 'y'), [key('src/b.ts')]: doc('x', 'y') }
   });
 }
 
@@ -96,12 +103,36 @@ describe('ChangesView', () => {
     resetMockStore({
       openFiles: { [WS]: [{ path: 'src/b.ts', ignored: false, size: 1 }] },
       activeFile: { workspace: WS, path: 'src/b.ts' },
-      activeFileNew: 'fresh',
-      activeFileBase: 'fresh',
-      activeFileError: null
+      docs: { [key('src/b.ts')]: doc('fresh', 'fresh') }
     });
     await tick();
     expect(lines().length).toBe(0);
+  });
+
+  // FE2's live defect: the shown tab's content was four bag fields, so a tab
+  // switch moved the tab pointer and left the content where it was — the viewer
+  // painted the previous file's text under the new tab's name for the whole
+  // round trip. The keyed record ties each document to the tab it describes,
+  // so a tab with no document says "loading".
+  it('a tab switch shows the new tab, never the previous tab\'s content', async () => {
+    seedOpen('src/a.ts', 'one\ntwo', 'one\ntwo');
+    render(ChangesView);
+    await vi.waitFor(() => expect(lines().length).toBe(2));
+
+    // B is open and its read is in flight: the tab has no document yet.
+    resetMockStore({
+      openFiles: {
+        [WS]: [
+          { path: 'src/a.ts', ignored: false, size: 1 },
+          { path: 'src/b.ts', ignored: false, size: 1 }
+        ]
+      },
+      activeFile: { workspace: WS, path: 'src/b.ts' },
+      docs: { [key('src/a.ts')]: doc('one\ntwo', 'one\ntwo') }
+    });
+    await tick();
+    expect(lines().length, 'A\'s lines under B\'s tab').toBe(0);
+    expect(screen.getByText('loading…')).toBeInTheDocument();
   });
 
   it('does not diff the last line when only the trailing newline differs', async () => {
@@ -141,25 +172,81 @@ describe('ChangesView', () => {
     await vi.waitFor(() => expect(screen.getByText('empty file')).toBeInTheDocument());
   });
 
-  it('shows the binary reason carried by the store', async () => {
+  it('shows the binary reason the tab\'s read recorded', async () => {
     resetMockStore({
       openFiles: { [WS]: [{ path: 'a.bin', ignored: false, size: 128 }] },
       activeFile: { workspace: WS, path: 'a.bin' },
-      activeFileNew: null,
-      activeFileBase: null,
-      activeFileError: 'binary file · 128 bytes'
+      docs: { [key('a.bin')]: doc(null, null, 'binary file · 128 bytes') }
     });
     render(ChangesView);
     await vi.waitFor(() => expect(screen.getByText('binary file · 128 bytes')).toBeInTheDocument());
+  });
+
+  // FE2's live defect (the read side): a failure recorded for one tab spoke
+  // for every tab, because the fields were global. The document is per tab.
+  it('a tab that failed to read does not speak for the tab the user switched to', async () => {
+    resetMockStore({
+      openFiles: {
+        [WS]: [
+          { path: 'a.bin', ignored: false, size: 128 },
+          { path: 'src/b.ts', ignored: false, size: 1 }
+        ]
+      },
+      activeFile: { workspace: WS, path: 'a.bin' },
+      docs: { [key('a.bin')]: doc(null, null, 'binary file · 128 bytes') }
+    });
+    render(ChangesView);
+    await vi.waitFor(() => expect(screen.getByText('binary file · 128 bytes')).toBeInTheDocument());
+
+    // The tab strip's click: the tab pointer moves, B's read is in flight.
+    resetMockStore({
+      openFiles: {
+        [WS]: [
+          { path: 'a.bin', ignored: false, size: 128 },
+          { path: 'src/b.ts', ignored: false, size: 1 }
+        ]
+      },
+      activeFile: { workspace: WS, path: 'src/b.ts' },
+      docs: { [key('a.bin')]: doc(null, null, 'binary file · 128 bytes') }
+    });
+    await tick();
+    expect(screen.queryByText('binary file · 128 bytes'), 'the failure is the tab it read').toBeNull();
+    expect(screen.getByText('loading…')).toBeInTheDocument();
+  });
+
+  it('the closed tab\'s document is gone, the survivor keeps its own', async () => {
+    resetMockStore({
+      openFiles: {
+        [WS]: [
+          { path: 'src/a.ts', ignored: false, size: 1 },
+          { path: 'src/b.ts', ignored: false, size: 1 }
+        ]
+      },
+      activeFile: { workspace: WS, path: 'src/a.ts' },
+      docs: { [key('src/a.ts')]: doc('a-body', 'a-body'), [key('src/b.ts')]: doc('b-body', 'b-body') }
+    });
+    render(ChangesView);
+    await vi.waitFor(() => expect(lines().length).toBe(1));
+    expect(lines()[0]!.querySelector('.src')?.textContent).toBe('a-body');
+
+    // The tab strip's close: the tab drops out of the open set, and the
+    // neighbour takes the active slot with its own document.
+    closeFile(WS, 'src/a.ts');
+    resetMockStore({
+      openFiles: { [WS]: [{ path: 'src/b.ts', ignored: false, size: 1 }] },
+      activeFile: { workspace: WS, path: 'src/b.ts' },
+      docs: { [key('src/b.ts')]: doc('b-body', 'b-body') }
+    });
+    await tick();
+    await vi.waitFor(() => expect(lines().length).toBe(1));
+    expect(lines()[0]!.querySelector('.src')?.textContent).toBe('b-body');
   });
 
   it('shows the read error carried by the store', async () => {
     resetMockStore({
       openFiles: { [WS]: [{ path: 'gone.ts', ignored: false, size: 0 }] },
       activeFile: { workspace: WS, path: 'gone.ts' },
-      activeFileNew: null,
-      activeFileBase: null,
-      activeFileError: 'cannot read: reading gone.ts: No such file'
+      docs: { [key('gone.ts')]: doc(null, null, 'cannot read: reading gone.ts: No such file') }
     });
     render(ChangesView);
     await vi.waitFor(() =>

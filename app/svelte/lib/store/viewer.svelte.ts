@@ -4,23 +4,8 @@
 import { command } from '../wire/protocol';
 import { errText } from '../wire/errors';
 import { closeIn, openIn } from '../rules/openfiles';
+import { answerDoc, dropDoc, issueDoc } from '../rules/activedoc';
 import { ensurePane, store } from './state.svelte';
-
-// The request the shown content belongs to: the key and the generation it was
-// issued under, minted where the round trip is issued. This is `openedFor`'s
-// shape (rules/windowing.ts:27) and the `?? 0) + 1` bump of
-// rules/sessions.ts:254 — one pair, advanced by every issue.
-//
-// The pair is what a response answers, not the tab's fields. A tab switch and
-// a refetch of the tab already showing are both new requests; comparing
-// `activeFile.workspace`/`.path` sees only the first, because a refetch leaves
-// both unchanged — so the watcher's own re-read of the shown file was never
-// guarded. The round trip is two awaits deep (file_read, then git_show), so
-// responses land in the order the core answers, and the newest request can
-// lose to the one it replaced.
-let issued = 0;
-let current: { key: string; gen: number } | null = null;
-const keyOf = (ws: string, path: string): string => `${ws}\n${path}`;
 
 // Open a file in the viewer: adds it to the workspace's open set (a no-op if
 // already open), makes it the active tab, and switches the center to the file
@@ -34,23 +19,17 @@ export function openFile(ws: string, path: string, ignored: boolean, size: numbe
   void fetchActiveFile(ws, path);
 }
 
-export function resetActiveFile(): void {
-  current = null;
-  store.activeFile = null;
-  store.activeFileNew = null;
-  store.activeFileBase = null;
-  store.activeFileError = null;
-}
-
-// Close a tab: drop it from the open set. The neighbour tab takes the active
-// slot; closing the last file returns the center to the transcript.
+// Close a tab: drop it from the open set, and its document with it. The
+// neighbour tab takes the active slot; closing the last file returns the
+// center to the transcript.
 export function closeFile(ws: string, path: string): void {
   const { list, activate } = closeIn(store.openFiles[ws] ?? [], path);
   store.openFiles = { ...store.openFiles, [ws]: list };
+  store.docs = dropDoc(store.docs, ws, path);
   const a = store.activeFile;
   if (!a || a.workspace !== ws || a.path !== path) return;
   if (activate === null) {
-    resetActiveFile();
+    store.activeFile = null;
     ensurePane(ws).center = 'chat';
     return;
   }
@@ -94,32 +73,33 @@ export function reconcileActiveFile(ws: string): void {
     void fetchActiveFile(ws, first.path);
     return;
   }
-  resetActiveFile();
+  store.activeFile = null;
   ensurePane(ws).center = 'chat';
 }
 
-// The active tab's content + git base. A file_read rejection is a real reason
+// Read a tab's content + git base. A file_read rejection is a real reason
 // (binary / unreadable), not an empty file: it is surfaced, not swallowed.
+// The read is issued against its tab and lands on its tab: `issueDoc` bumps
+// that tab's generation, `answerDoc` writes only the response whose
+// generation the tab still carries — the newest request wins the tab in any
+// order the responses arrive (the round trip is two awaits deep, so they land
+// in the order the core answers).
 export async function fetchActiveFile(ws: string, path: string): Promise<void> {
-  const key = keyOf(ws, path);
-  const gen = (issued += 1);
-  current = { key, gen };
+  const issued = issueDoc(store.docs, ws, path);
+  store.docs = issued.docs;
   const entry = (store.openFiles[ws] ?? []).find((f) => f.path === path);
   const ignored = entry?.ignored ?? false;
   const size = entry?.size ?? 0;
-  // A response belongs to the request that produced it: every write checks the
-  // generation it was issued under, so the code that replaces this request
-  // needs no new guard site.
-  const answers = (): boolean => current?.key === key && current.gen === gen;
   let file: string;
   try {
     const out = await command({ type: 'file_read', workspace: ws, path, offset: null, limit: null });
     file = out.kind === 'file' ? out.file.text : '';
   } catch (e) {
-    if (!answers()) return;
-    store.activeFileNew = null;
-    store.activeFileBase = null;
-    store.activeFileError = isBinaryError(errText(e)) ? `binary file · ${size} bytes` : `cannot read: ${errText(e)}`;
+    store.docs = answerDoc(store.docs, ws, path, issued.gen, {
+      text: null,
+      base: null,
+      error: isBinaryError(errText(e)) ? `binary file · ${size} bytes` : `cannot read: ${errText(e)}`
+    });
     return;
   }
   // A gitignored file has no committed base; diffing it against empty would
@@ -127,10 +107,7 @@ export async function fetchActiveFile(ws: string, path: string): Promise<void> {
   const base = ignored
     ? file
     : await command({ type: 'git_show', workspace: ws, path }).then((o) => (o.kind === 'git_show' ? o.text : '')).catch(() => '');
-  if (!answers()) return;
-  store.activeFileNew = file;
-  store.activeFileBase = base;
-  store.activeFileError = null;
+  store.docs = answerDoc(store.docs, ws, path, issued.gen, { text: file, base, error: null });
 }
 
 // The core rejects non-UTF-8 files (its line reader errors on invalid bytes);

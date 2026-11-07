@@ -6,6 +6,7 @@
   // toggles between this and the transcript (pane.center); the "chat" control
   // and Esc leave the viewer without closing any file.
   import { store, closeFile, selectFile, setCenterMode } from '../lib/store/store.svelte';
+  import { docOf } from '../lib/rules/activedoc';
   import { buildDiffLines, assemble, langFor, type RenderLine } from '../lib/display/diffview';
   import { highlightLines } from '../lib/display/highlight';
   import CodeLines from './CodeLines.svelte';
@@ -15,9 +16,7 @@
   const active = $derived(store.activeFile);
   const ws = $derived(active?.workspace ?? null);
   const openList = $derived(active ? (store.openFiles[active.workspace] ?? []) : []);
-  const next = $derived(store.activeFileNew);
-  const base = $derived(store.activeFileBase);
-  const err = $derived(store.activeFileError);
+  const doc = $derived(docOf(store.docs, store.openFiles, ws, active?.path ?? null));
 
   // Render lines (line number + diff mark + syntax spans), recomputed when the
   // content, base, or language changes. The async highlight is guarded so a slow
@@ -30,12 +29,13 @@
   const lnDigits = $derived(lines.reduce((m, l) => Math.max(m, l.no.length), 0) || 4);
   $effect(() => {
     const a = active;
-    const n = next;
-    const b = base;
-    if (!a || n === null) {
+    const d = doc;
+    if (!a || d === null || d.text === null) {
       lines = [];
       return;
     }
+    const n = d.text;
+    const b = d.base;
     let live = true;
     // The round trip starts now: the lines on screen are the previous file's,
     // and the card must not show them while this file's highlight is in flight.
@@ -86,11 +86,11 @@
       </div>
     </div>
     <div class="body">
-      {#if err !== null}
-        <div class="note">{err}</div>
-      {:else if next === null}
+      {#if doc === null}
         <div class="note">loading…</div>
-      {:else if next === ''}
+      {:else if doc.error !== null}
+        <div class="note">{doc.error}</div>
+      {:else if doc.text === ''}
         <div class="note">empty file</div>
       {:else}
         <div class="code" style={`--lnw: ${lnDigits}; --src-pad: 16px`}>

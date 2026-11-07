@@ -40,9 +40,7 @@ function dirtied(): StoreBag {
     gitStatus: { w1: { branch: 'main', modified: [], untracked: [], deleted: [] } },
     openFiles: { w1: [{ path: 'a.ts', ignored: false, size: 1 }] },
     activeFile: { workspace: 'w1', path: 'a.ts' },
-    activeFileNew: 'body',
-    activeFileBase: 'base',
-    activeFileError: 'unreadable',
+    docs: { 'w1\na.ts': { text: 'body', base: 'base', error: 'unreadable', gen: 1 } },
     pane: { w1: { ...defaultPane(), center: 'files' } },
     tabSelected: ['w1'],
     tabSelAnchor: 'w1'
