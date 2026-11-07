@@ -1,6 +1,5 @@
 use super::{
-    AgentError, AgentSession, Inner, OmStatusHook, PlanStateHook, QueueEventHook, StreamDeltaHook,
-    TurnConfig,
+    AgentError, AgentSession, Inner, OmStatusHook, QueueEventHook, StreamDeltaHook, TurnConfig,
 };
 use crate::provider::ToolSpec;
 use crate::session::{EntryEventHook, SessionStore};
@@ -44,12 +43,6 @@ impl AgentSession {
 
     pub(crate) fn set_queue_event_hook(&self, hook: Option<QueueEventHook>) {
         self.inner.lock().queue_event_hook = hook;
-    }
-
-    /// The plan-state reader (design: the plan file is the source of
-    /// truth); `None` clears it.
-    pub(crate) fn set_plan_hook(&self, hook: Option<PlanStateHook>) {
-        self.inner.lock().plan_hook = hook;
     }
 
     /// The job-completion hook (#53): the harness wires it to the session

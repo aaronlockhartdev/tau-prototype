@@ -118,11 +118,6 @@ pub struct Core {
     /// it for all. Watched non-recursively — the dir's other files
     /// (`workspaces.json`, `agents`, `skills`) are not config.
     pub(crate) system_config_watcher: Mutex<Option<Watcher>>,
-    /// The watcher-parsed plan state per session (design: the plan file is
-    /// the source of truth; this is its parse, kept fresh by the
-    /// per-workspace plan watcher). Dropped on session close — the file on
-    /// disk is the record, the cache is not.
-    pub(crate) plans: Mutex<HashMap<String, crate::plan::Plan>>,
     pub(crate) system_dir: Option<PathBuf>,
     /// The user's home dir (the home-level `.agents/skills/` root; the
     /// `system_dir` seam's sibling for tests).
@@ -267,7 +262,6 @@ impl CoreBuilder {
             }),
             home_watcher: Mutex::new(None),
             system_config_watcher: Mutex::new(None),
-            plans: Mutex::new(HashMap::new()),
             system_dir: self.system_dir.clone(),
             home: self.home.clone(),
             custom: self.custom,
@@ -609,18 +603,6 @@ impl Core {
         });
         skills
     }
-
-    /// The open workspace whose cwd is `path` (the plan event's routing);
-    /// `None` when the cwd names no open workspace (a close racing the
-    /// watcher) — the parse is cached either way.
-    fn workspace_id_for_cwd(&self, cwd: &Path) -> Option<String> {
-        self.workspaces
-            .lock()
-            .values()
-            .find(|state| Path::new(&state.workspace.cwd) == cwd)
-            .map(|state| state.workspace.id.clone())
-    }
-
     fn load_workspace_index(&self) -> Vec<WorkspaceIndexEntry> {
         let Some(dir) = &self.system_dir else {
             return Vec::new();
@@ -681,52 +663,6 @@ impl Core {
         // go together.
         self.configs.lock().remove(id);
         Ok(())
-    }
-
-    /// The session's current plan state, rendered for injection (the
-    /// watcher-parsed state of the plan file); `None` until the first
-    /// observation.
-    pub(crate) fn plan_state(&self, session: &str) -> Option<String> {
-        self.plans.lock().get(session).map(crate::plan::render)
-    }
-
-    /// Re-read and parse the session's plan file into the state cache: the
-    /// plan watcher's consumer, and the session-start seed. A failed read
-    /// (a torn write, a delete) degrades to an empty plan — the parser is
-    /// total, so nothing here can fail a turn. A changed parse is emitted as
-    /// a `plan_changed` (the GUI's plan pane, spec §5.3) when the cwd names
-    /// an open workspace — and only when the parse actually changed: an
-    /// editor saving unchanged content must not churn the UI (#177).
-    /// `silent` seeds the cache without emitting: the session-open path must
-    /// warm the cache for the first assembly, but the seed is not a change —
-    /// emitting it made a plain open advance the sidebar's last-modified.
-    pub(crate) fn refresh_plan(&self, workspace: &Path, session_id: &str, silent: bool) {
-        let raw =
-            std::fs::read_to_string(crate::plan::path(workspace, session_id)).unwrap_or_default();
-        let plan = crate::plan::parse(&raw);
-        let done = plan.done_count();
-        let total = plan.steps.len();
-        let changed = self
-            .plans
-            .lock()
-            .insert(session_id.to_owned(), plan.clone())
-            .is_none_or(|prev| prev != plan);
-        tracing::info!(
-            session = %session_id,
-            done,
-            total,
-            "plan state observed"
-        );
-        if silent || !changed {
-            return;
-        }
-        if let Some(id) = self.workspace_id_for_cwd(workspace) {
-            self.emit(Event::PlanChanged {
-                workspace: id,
-                session: session_id.to_owned(),
-                plan: plan.into(),
-            });
-        }
     }
 
     /// The project layer's directory: where a workspace's own config file lives.

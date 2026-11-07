@@ -32,15 +32,9 @@ impl Core {
                 message: e.to_string(),
             })?;
         let meta = live.meta.lock().clone();
-        // The plan pane's data (spec §5.3): the watcher-parsed state;
+        // The plan pane's data (spec §5.3): the state the session observed;
         // a session with no observed plan renders empty.
-        let plan = self
-            .plans
-            .lock()
-            .get(&meta.id)
-            .cloned()
-            .map(Into::into)
-            .unwrap_or_default();
+        let plan = live.agent.plan().map(Into::into).unwrap_or_default();
         Ok(Snapshot {
             workspace,
             session: SessionMeta {
