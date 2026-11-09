@@ -6,11 +6,13 @@
 import { tick } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
 import type { Entry, SessionMeta } from '../lib/wire/protocol';
 import type { SessionState } from '../lib/rules/sessions';
 import Transcript from './Transcript.svelte';
 import { drives } from '../lib/testing/VirtualizerMock.svelte';
 import { fetchWindow, mockStore, resetMockStore, seedState } from '../lib/testing/mock-store.svelte.ts';
+import { defaultPane } from '../lib/rules/panes';
 
 vi.mock('../lib/store/store.svelte', async () => {
   const m = await import('../lib/testing/mock-store.svelte.ts');
@@ -48,7 +50,9 @@ function seed(n: number, over: SeedOver = {}): void {
   const s: SessionState = seedState(meta('c1'));
   s.entries = entries(n);
   if (over.turn) s.turn = over.turn;
-  resetMockStore({ current: 'c1', sessions: { c1: s } });
+  // FE4's seam: the pane is seeded by the workspace's producer, so a test
+  // mounts the transcript with the pane its tab would have.
+  resetMockStore({ current: 'c1', sessions: { c1: s }, pane: { [WS]: defaultPane() } });
 }
 
 async function mount(): Promise<void> {
@@ -190,5 +194,135 @@ describe('Transcript', () => {
     expect(fetchWindow).toHaveBeenCalledTimes(2);
     expect(fetchWindow).toHaveBeenCalledWith('c1', 0, 1);
     expect(fetchWindow).toHaveBeenCalledWith('c1', 0, 31);
+  });
+});
+
+// The new-activity pill (FE5/FE9d). The mock virtualizer reports size 0, so
+// offset 0 sits at the tail and any negative offset is scrolled up.
+describe('the new-activity pill', () => {
+  const user = userEvent.setup();
+
+  const pill = (): HTMLElement | null => screen.queryByRole('button', { name: /new$/ });
+  const scrollUp = (): void => {
+    drives[0]!(-10);
+  };
+  const scrollToTail = (): void => {
+    drives[0]!(0);
+  };
+  const addEntry = (id: string, text: string): void => {
+    mockStore.sessions.c1!.entries[id] = { id, kind: 'user', text };
+  };
+
+  it('counts a new entry while scrolled up', async () => {
+    seed(1);
+    await mount();
+    scrollUp();
+    addEntry('e1', 'message 1');
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 1 new');
+  });
+
+  it('counts the tail entry streaming while scrolled up', async () => {
+    seed(1);
+    await mount();
+    scrollUp();
+    mockStore.sessions.c1!.entries.e0!.text += ' and more';
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 1 new');
+  });
+
+  it('rests at zero at the tail, and clears when the view returns to it', async () => {
+    seed(1);
+    await mount();
+    addEntry('e1', 'message 1');
+    await tick();
+    expect(pill()).toBeNull();
+    scrollUp();
+    addEntry('e2', 'message 2');
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 1 new');
+    scrollToTail();
+    await tick();
+    expect(pill()).toBeNull();
+  });
+
+  it('counts each entry of a burst, and one arrival for a stream', async () => {
+    // The pair is compared, not encoded: an entry past the watermark is an
+    // arrival each, the tail growing past it is one arrival however many
+    // deltas land.
+    seed(1);
+    await mount();
+    scrollUp();
+    addEntry('e1', 'message 1');
+    addEntry('e2', 'message 2');
+    addEntry('e3', 'message 3');
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 3 new');
+    mockStore.sessions.c1!.entries.e3!.text += ' keeps streaming';
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 4 new');
+    mockStore.sessions.c1!.entries.e3!.text += ' and again';
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 4 new');
+  });
+
+  it('clears on a session switch', async () => {
+    seed(1);
+    await mount();
+    scrollUp();
+    addEntry('e1', 'message 1');
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 1 new');
+    const c2 = seedState(meta('c2'));
+    c2.entries = entries(1);
+    mockStore.sessions.c2 = c2;
+    mockStore.current = 'c2';
+    await tick();
+    expect(pill()).toBeNull();
+  });
+
+  it('counts what arrives in the session it switches to', async () => {
+    // The switch starts that session's unread window at the transcript it
+    // landed on: the entries the switch brought are seen, the next to arrive
+    // is not.
+    seed(1);
+    await mount();
+    scrollUp();
+    addEntry('e1', 'message 1');
+    await tick();
+    const c2 = seedState(meta('c2'));
+    c2.entries = entries(1);
+    mockStore.sessions.c2 = c2;
+    mockStore.current = 'c2';
+    await tick();
+    expect(pill()).toBeNull();
+    mockStore.sessions.c2.entries.e1 = { id: 'e1', kind: 'user', text: 'message 1' };
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 1 new');
+  });
+
+  it('counts the entry that follows a tail stream past 100 000 characters', async () => {
+    // The change signature encoded the pair as `all.length * 100000 + len`, so
+    // a tail past 100 000 characters carries the next length bucket: the
+    // arriving entry's signature reads lower than the one it replaces and the
+    // pill stops counting (audit FE5).
+    seed(1);
+    mockStore.sessions.c1!.entries.e0!.text = 'x'.repeat(150_000);
+    await mount();
+    scrollUp();
+    addEntry('e1', 'message 1');
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 1 new');
+  });
+
+  it('clears when clicked', async () => {
+    seed(1);
+    await mount();
+    scrollUp();
+    addEntry('e1', 'message 1');
+    await tick();
+    await user.click(screen.getByRole('button', { name: '↓ 1 new' }));
+    await tick();
+    expect(pill()).toBeNull();
   });
 });

@@ -15,6 +15,11 @@ describe('defaultPane', () => {
     expect(p.selected).toEqual([]);
     expect(p.selAnchor).toBeNull();
   });
+
+  it('opens pinned to the transcript tail', () => {
+    // The transcript's pill and both pin effects read this flag.
+    expect(defaultPane().stickToBottom).toBe(true);
+  });
 });
 
 describe('paneOf', () => {

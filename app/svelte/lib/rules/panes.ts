@@ -20,6 +20,10 @@ export interface PaneState {
   renamingId: string | null;
   archOpen: boolean;
   selSub: string | null;
+  // The transcript's stick-to-bottom pin: the view sits at the tail (the
+  // scroll position virtua reports, not a direction). Per tab, so the pin is
+  // the tab's own view state (FE9d).
+  stickToBottom: boolean;
   // The session-tree multiselect (cmd/ctrl toggle, shift range): the
   // selected ids and the row a shift range extends from.
   selected: string[];
@@ -36,6 +40,7 @@ export function defaultPane(): PaneState {
     renamingId: null,
     archOpen: false,
     selSub: null,
+    stickToBottom: true,
     selected: [],
     selAnchor: null
   };

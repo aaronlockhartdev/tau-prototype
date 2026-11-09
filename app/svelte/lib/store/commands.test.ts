@@ -9,6 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => mockInv
 
 import { type Command, type CommandOutput, type SessionMeta, type Workspace } from '../wire/protocol';
 import { openSession } from '../rules/sessions';
+import { defaultPane } from '../rules/panes';
 import { store } from './store.svelte';
 import { freshStore } from '../testing/store-harness';
 import {
@@ -84,18 +85,7 @@ beforeEach(() => {
 describe('newSession / renameSession', () => {
   it('newSession opens the fresh session and drops into inline rename', async () => {
     defaultIPC();
-    store.pane[WS.id] = {
-      center: 'chat',
-      ltab: 'sessions',
-      rtab: 'subs',
-      historyOpen: false,
-      openGroups: null,
-      renamingId: null,
-      archOpen: false,
-      selSub: null,
-      selected: [],
-      selAnchor: null
-    };
+    store.pane[WS.id] = defaultPane();
     const sid = await newSession(WS.id);
     expect(sid).toBe('s2');
     expect(store.current).toBe('s2');
