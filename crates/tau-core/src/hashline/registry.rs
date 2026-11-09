@@ -28,13 +28,27 @@ struct OwnedEntry {
     path: String,
 }
 
-/// A file's most recent allocation: the anchors (in line order) and the
-/// checksum of the line each was minted for. A re-read re-anchors against
-/// this.
-#[derive(Debug, Clone)]
-struct FileState {
+/// What one path's entry carries, in one place. `allocated` separates "this
+/// path has an anchor set" from "this path was only touched": the accessors
+/// answer `None` for the latter, and a zero-line file allocates an empty set
+/// that must still read as allocated.
+#[derive(Debug, Clone, Default)]
+struct PathEntry {
+    /// The anchors in line order, and the checksum of the line each was
+    /// minted for — the re-anchor base a re-read compares against.
     anchors: Vec<String>,
     checksums: Vec<String>,
+    allocated: bool,
+    /// What the model was shown: anchor → line checksum at serve time. The
+    /// integrity check (item 1) compares these against the file. `None` until
+    /// a `serve`/`adopt` shows a line of this path.
+    served: Option<HashMap<String, String>>,
+    /// The next collision probe starts here; `mint` falls back to the global
+    /// cursor when this is `None`. It used to live in a session-lifetime map
+    /// whose own doc said it lived within a single read.
+    hint: Option<usize>,
+    /// The LRU tick this path was last read or edited (`touch`).
+    last_used: u64,
 }
 
 #[derive(Default)]
@@ -42,22 +56,17 @@ struct FileState {
 pub struct Registry {
     /// Every anchor this session owns, and what it points at.
     owned: HashMap<String, OwnedEntry>,
-    /// Per-file allocation state (anchors + checksums), the re-anchor base.
-    file_state: HashMap<String, FileState>,
-    /// What the model was shown: anchor → line checksum at serve time. The
-    /// integrity check (item 1) compares these against the file.
-    served: HashMap<String, HashMap<String, String>>,
-    /// LRU clock: the order files were last read or edited.
-    last_used: HashMap<String, u64>,
+    /// Everything the registry tracks about one path — allocation, served
+    /// baseline, mint hint, LRU stamp — in ONE entry, so `evict_path` removes
+    /// it once. These were four maps swept by hand: a sweep that missed one
+    /// left a served baseline, a mint hint, and an LRU stamp behind for a
+    /// file whose anchors were gone (audit 1C).
+    paths: HashMap<String, PathEntry>,
+    /// The LRU clock the stamps in `paths` are taken from.
     usage_clock: u64,
-    /// The probe cursor for allocation (continues across files).
+    /// The probe cursor for allocation (continues across files); the mint's
+    /// fallback when a path carries no hint.
     probe: usize,
-    /// Per-file allocation hint: the next collision probe starts where this
-    /// file's last mint left off — the registry's mirror of the pure path's
-    /// running hint. It lives within a single read (the read's
-    /// `evict_path` drops it afterwards); across reads `probe` is the
-    /// fallback.
-    file_hint: HashMap<String, usize>,
     /// Anchors reclaimed most recently, drained by `take_reclaimed`.
     reclaimed: VecDeque<String>,
     /// Anchors this session retired: the retired slots of every record it
@@ -77,7 +86,7 @@ impl std::fmt::Debug for Registry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Registry")
             .field("owned", &self.owned.len())
-            .field("served_files", &self.served.len())
+            .field("paths", &self.paths.len())
             .finish()
     }
 }
@@ -108,7 +117,7 @@ impl Registry {
     }
     fn touch(&mut self, path: &str) {
         self.usage_clock += 1;
-        self.last_used.insert(path.to_owned(), self.usage_clock);
+        self.paths.entry(path.to_owned()).or_default().last_used = self.usage_clock;
     }
 
     /// Allocate (or re-anchor) the file's anchor set for a read. A first read
@@ -133,9 +142,10 @@ impl Registry {
         let checksums: Vec<String> = lines.iter().map(|l| line_checksum(l)).collect();
 
         let prev = self
-            .file_state
+            .paths
             .get(path)
-            .map(|fs| (fs.anchors.clone(), fs.checksums.clone()))
+            .filter(|entry| entry.allocated)
+            .map(|entry| (entry.anchors.clone(), entry.checksums.clone()))
             .or_else(|| self.seed_from_store(path, &checksums));
         let matched = match &prev {
             Some((_anchors, checksums_prev)) => {
@@ -184,11 +194,13 @@ impl Registry {
                 },
             );
         }
-        self.file_state.insert(
+        self.paths.insert(
             path.to_owned(),
-            FileState {
+            PathEntry {
                 anchors: new_anchors.clone(),
                 checksums,
+                allocated: true,
+                ..PathEntry::default()
             },
         );
 
@@ -198,7 +210,12 @@ impl Registry {
     /// Record what the model was shown: the integrity baseline.
     pub fn serve(&mut self, path: &str, rows: &[(String, String)]) {
         self.touch(path);
-        let served = self.served.entry(path.to_owned()).or_default();
+        let served = self
+            .paths
+            .entry(path.to_owned())
+            .or_default()
+            .served
+            .get_or_insert_with(HashMap::new);
         for (anchor, checksum) in rows {
             served.insert(anchor.clone(), checksum.clone());
         }
@@ -217,7 +234,12 @@ impl Registry {
                 },
             );
         }
-        let served = self.served.entry(path.to_owned()).or_default();
+        let served = self
+            .paths
+            .entry(path.to_owned())
+            .or_default()
+            .served
+            .get_or_insert_with(HashMap::new);
         for (anchor, checksum) in rows {
             served.insert(anchor.clone(), checksum.clone());
         }
@@ -227,14 +249,17 @@ impl Registry {
     /// baseline); `None` if nothing of this file was ever shown.
     #[must_use]
     pub fn served_map(&self, path: &str) -> Option<&HashMap<String, String>> {
-        self.served.get(path)
+        self.paths.get(path).and_then(|entry| entry.served.as_ref())
     }
 
     /// The file's current anchor set (in line order); `None` if the file has
     /// never been allocated in this session.
     #[must_use]
     pub fn anchors_for(&self, path: &str) -> Option<&[String]> {
-        self.file_state.get(path).map(|fs| fs.anchors.as_slice())
+        self.paths
+            .get(path)
+            .filter(|entry| entry.allocated)
+            .map(|entry| entry.anchors.as_slice())
     }
 
     /// Re-read after a successful write: the edited file's anchors are the new
@@ -253,11 +278,13 @@ impl Registry {
                 },
             );
         }
-        self.file_state.insert(
+        self.paths.insert(
             path.to_owned(),
-            FileState {
+            PathEntry {
                 anchors: hashes.to_vec(),
                 checksums: checksums.clone(),
+                allocated: true,
+                ..PathEntry::default()
             },
         );
         self.touch(path);
@@ -342,16 +369,21 @@ impl Registry {
         let taken = |this: &Self, anchor: &str| {
             this.owned.contains_key(anchor) || this.freed.contains(anchor) || fresh.contains(anchor)
         };
+        let hint = self
+            .paths
+            .get(protect)
+            .and_then(|entry| entry.hint)
+            .unwrap_or(self.probe);
         let start = match line {
             Some(l) => {
                 let base = crate::hashline::line_base_idx(l);
                 if taken(self, &idx_to_hash(base)) {
-                    self.file_hint.get(protect).copied().unwrap_or(self.probe)
+                    hint
                 } else {
                     base
                 }
             }
-            None => self.file_hint.get(protect).copied().unwrap_or(self.probe),
+            None => hint,
         };
         loop {
             // One stride walk covers the space exactly: gcd(STRIDE, HASH_SPACE) = 1
@@ -363,7 +395,7 @@ impl Registry {
                     let after = (idx + crate::hashline::STRIDE) % crate::hashline::HASH_SPACE;
                     self.probe = after;
                     if line.is_some() {
-                        self.file_hint.insert(protect.to_owned(), after);
+                        self.paths.entry(protect.to_owned()).or_default().hint = Some(after);
                     }
                     return Ok(candidate);
                 }
@@ -406,10 +438,10 @@ impl Registry {
 
     fn reclaim(&mut self, protect: &str) -> Option<String> {
         let victim = self
-            .last_used
+            .paths
             .iter()
             .filter(|(path, _)| **path != protect)
-            .min_by_key(|(_, t)| *t)
+            .min_by_key(|(_, entry)| entry.last_used)
             .map(|(path, _)| path.to_owned())?;
         self.evict_path(&victim);
         self.reclaimed.push_back(victim.clone());
@@ -418,10 +450,7 @@ impl Registry {
 
     fn evict_path(&mut self, path: &str) {
         self.owned.retain(|_, e| e.path != path);
-        self.file_state.remove(path);
-        self.file_hint.remove(path);
-        self.served.remove(path);
-        self.last_used.remove(path);
+        self.paths.remove(path);
     }
 
     fn drain_reclaimed_warning(&mut self) -> Option<String> {
