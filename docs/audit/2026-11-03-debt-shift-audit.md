@@ -2254,3 +2254,55 @@ failure. **Campaign total: 49,185 → 50,427 (+1,242) through lane X.**
 
 **Rule kept:** measure a lane's delta post-merge, or from the lane's own checkout. A pre-merge number is a
 floor, never the number.
+
+# Wave 7 Measured Results (2026-11-08) — lanes X/Y/Z, merged
+
+Baseline `7ca7674c` (wave 6 close). Merged: `e1629be2` (lane Y, 4D), `585d802d` (lane X, 5F), `afc018b7`
+(lane Z, FE5 + FE9d).
+
+| Item | Predicted | Measured | Defect shape deleted | Live defect |
+|---|---|---|---|---|
+| 4D (`dataOf` folds every payload shape) | −11 | **+50** | `payloadTags` + the arm-fabrication cast | — (guards **moved**, not deleted) |
+| 5F (three `AtomicBool`s re-typed at four sites) | ~0 | **+63** | 3 hand-spelled `kill‖stop` disjunctions + a 4-flag superset | — (the `closed` arm was **unnoticed**: 205 agent + 325 harness tests green with it deleted) |
+| FE5 + FE9d (the activity pill) | −17 | **+35** | the mutation-in-`$effect` relation, the `*100000` signature, 3 hand-synced scalars | **yes** — a tail stream past 100 000 chars stopped counting (red on main, pinned) |
+
+**Wave 7 net: +148 production. Campaign total: 49,185 → 50,462 (+1,277).**
+Gates on merged `afc018b7`: Rust **1243/1243, 0 fails** (2135 s; fmt + clippy `-D warnings` clean);
+frontend **60 files / 695 tests**, eslint 0, `npm run build` clean, parity 56 surfaces OK, svelte-check 0/0.
+
+**4D's lesson, stated once:** the audit priced a deletion and got a relocation. `dataOf` returned the typed
+arm, the `other` escape, and `{}` through one cast, so ~19 `typeof` re-checks re-narrowed what the wire
+already fixed. The fix splits the populations: the wire path is typed by construction (`armOf` →
+`PayloadOf<T>`, and svelte-check enforces the field types) so its guards die; the sidecar path
+(`resolveBlobs`, the ADR-0005 stored map with no decode) keeps every guard, gathered into named readers.
+`typeof` 19 → 13; the 3 survivors on the arm path are legitimate (Rust `Value` for `args`, the untagged
+`ToolOutput` for `output`/`ui_detail`).
+
+**Wave 7's three for-its-own-sake wins** were not in any price: the `closed` arm pin (a shipped behavior
+with no test that noticed it — deleting the arm passed 530 tests), the force-is-not-a-stop pin (a widening
+that passed all 205 agent tests on main), and the pill's 100k test (the pill had **zero** tests at any point
+in 63 commits).
+
+# My "queue exhausted" claim was wrong: 14 undispositioned IDs (2026-11-08)
+
+The wave-6 closeout section above says the queue is "exhausted of agent-decidable items". It is not: the
+sweep only counted IDs the wave ledgers mentioned. Grepping every `## <id> ·` heading in this report against
+every wave ledger leaves **14 IDs with no disposition**: 1C 2F 3A 3C 3D 5E 6F H5 H6 H8 H9 H11 T5 FE1.
+Recorded so the next reader does not inherit a false "done".
+
+Verified at the source, wave 8 is staffed on three of them: **3A** (`repair_dangling_tool_calls`, 61 LOC —
+not the 67 I priced — one caller, zero tests naming it; the audit's own refutation of "zero coverage" is
+half right: a behavioral test exists, the minted string is unasserted), **1C + H5 + H6 + H7** (the
+`hashline/registry.rs` per-path map family: `owned`/`file_state`/`served`/`last_used`/`usage_clock`/`probe`/
+`file_hint`/`freed`, hand-swept in `evict_path` — the campaign's most-proven defect shape, root cause 1),
+**3C** (`chunk_covered` + the open/spent walk + the `spent` set, the guard existing because `fork_record`
+clones the parent's `buffered_chunks` wholesale).
+
+**6F ruled a no-op proof by me at the source, not a defect**: the second map read it prices is the
+documented #359 race closure in the `Err` arm (a watcher inserts an entry between the miss and the read).
+The audit's own text concedes it — "Benign … and the doc states the design". The audit priced −4 for it.
+
+Scopes disjoint: `agent/**` + `harness/sessions.rs` (repair), `hashline/**` (registry), `om_integration/**`
+(chunk). Both the 3A and 3C briefs require a **disk-compat argument before any deletion**: each guard
+heals records ALREADY ON DISK written by older builds, so a deletion is safe only for files the new writer
+produces. That constraint is the campaign's, earned by the 5C disk-shape pin.
