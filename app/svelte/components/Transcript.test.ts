@@ -246,6 +246,26 @@ describe('the new-activity pill', () => {
     expect(pill()).toBeNull();
   });
 
+  it('counts each entry of a burst, and one arrival for a stream', async () => {
+    // The pair is compared, not encoded: an entry past the watermark is an
+    // arrival each, the tail growing past it is one arrival however many
+    // deltas land.
+    seed(1);
+    await mount();
+    scrollUp();
+    addEntry('e1', 'message 1');
+    addEntry('e2', 'message 2');
+    addEntry('e3', 'message 3');
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 3 new');
+    mockStore.sessions.c1!.entries.e3!.text += ' keeps streaming';
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 4 new');
+    mockStore.sessions.c1!.entries.e3!.text += ' and again';
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 4 new');
+  });
+
   it('clears on a session switch', async () => {
     seed(1);
     await mount();
@@ -259,6 +279,26 @@ describe('the new-activity pill', () => {
     mockStore.current = 'c2';
     await tick();
     expect(pill()).toBeNull();
+  });
+
+  it('counts what arrives in the session it switches to', async () => {
+    // The switch starts that session's unread window at the transcript it
+    // landed on: the entries the switch brought are seen, the next to arrive
+    // is not.
+    seed(1);
+    await mount();
+    scrollUp();
+    addEntry('e1', 'message 1');
+    await tick();
+    const c2 = seedState(meta('c2'));
+    c2.entries = entries(1);
+    mockStore.sessions.c2 = c2;
+    mockStore.current = 'c2';
+    await tick();
+    expect(pill()).toBeNull();
+    mockStore.sessions.c2.entries.e1 = { id: 'e1', kind: 'user', text: 'message 1' };
+    await tick();
+    expect(pill()).toHaveTextContent('↓ 1 new');
   });
 
   it('counts the entry that follows a tail stream past 100 000 characters', async () => {

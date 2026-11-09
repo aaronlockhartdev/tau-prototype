@@ -4,10 +4,11 @@
   // pattern (virtua's Svelte Chat example). Paged hydration (spec §8) is
   // driven from virtua's visible range via findItemIndex over the scroll
   // offset.
+  import { untrack } from 'svelte';
   import { Virtualizer, type VirtualizerHandle } from 'virtua/svelte';
   import EntryCard from './EntryCard.svelte';
   import SubagentBlock from './SubagentBlock.svelte';
-  import { store, fetchWindow, currentSession, setFollow, switchSession } from '../lib/store/store.svelte';
+  import { store, pane, fetchWindow, currentSession, setFollow, switchSession, type PaneState } from '../lib/store/store.svelte';
   import { claimCrew, crewView, spawnRefsOf } from '../lib/display/subagent-view';
   import type { SubagentInfo } from '../lib/wire/protocol';
   import {
@@ -43,7 +44,15 @@
   // one direction. Every use of `ref` below stays fully typed through
   // VirtualizerHandle.
   let ref = $state<VirtualizerHandle | undefined>(undefined);
-  let shouldStickToBottom = $state(true);
+  // The tab's pane (FE9d): the stick-to-bottom pin is the tab's view state,
+  // written by the outside-world scroll callback and read by the pin effects
+  // and the pill's count.
+  const ws = $derived(curSession?.meta.workspace ?? null);
+  const p = $derived<PaneState | null>(pane(ws));
+  const stick = $derived(p?.stickToBottom ?? true);
+  function setStick(on: boolean): void {
+    if (p) p.stickToBottom = on;
+  }
 
   const entries = $derived(curSession ? curSession.entries : {});
   // The pre-first-output window: a turn is dispatched but no stream/tool
@@ -55,8 +64,8 @@
   // The parent → child direction: a user entry inside a child session is
   // the parent's message (steering, follow-up).
   const parentLabel = $derived.by(() => {
-    const p = curSession?.meta.parent ?? null;
-    return p ? store.sessions[p]?.meta.title ?? '' : '';
+    const parent = curSession?.meta.parent ?? null;
+    return parent ? store.sessions[parent]?.meta.title ?? '' : '';
   });
 
   // The transcript is the entry map's values in creation-id order
@@ -106,30 +115,46 @@
     return curSession?.subagents.find((i) => i.handle === h) ?? null;
   });
 
-  // New-activity pill (P2): while the user is scrolled up, arriving activity
+  // New-activity pill (P2): while the view is scrolled up, arriving activity
   // (a new entry, or the tail entry's stream growing) counts up instead of
-  // yanking the scroll; reaching the bottom — or the pill — clears it.
-  let newCount = $state(0);
-  let lastSignal = 0;
-  let signalSession = '';
+  // yanking the scroll; reaching the tail — or the pill — clears it.
   const lastLen = $derived.by(() => {
     const e = all[all.length - 1];
     return e && typeof e.text === 'string' ? e.text.length : 0;
   });
-  const sig = $derived(all.length * 100000 + lastLen);
-  $effect(() => {
-    void sig;
-    void cur;
-    if (cur !== signalSession) {
-      signalSession = cur ?? '';
-      newCount = 0;
-    } else if (shouldStickToBottom) {
-      newCount = 0;
-    } else if (sig > lastSignal) {
-      newCount++;
-    }
-    lastSignal = sig;
+  // Where the unread activity starts, per session: the transcript as it stood
+  // when the view landed on the session and when it left the tail. The
+  // container's mount and virtua's scroll callback write it; reaching the tail
+  // — or the pill — clears it. The count below is the relation between that
+  // marker and the transcript as it stands.
+  const unreadFrom = $state<Record<string, { count: number; len: number }>>({});
+  function startUnread(): void {
+    if (cur) unreadFrom[cur] = { count: all.length, len: lastLen };
+  }
+  function clearUnread(): void {
+    if (cur) delete unreadFrom[cur];
+  }
+  // The pair is compared, never encoded into one number: a signature of
+  // `count * 100000 + len` caps at 100 000 tail characters, where the next
+  // length bucket makes an arriving entry read as less activity. A stream is
+  // one arrival however many deltas it lands; each entry past the start is an
+  // arrival each.
+  const newCount = $derived.by(() => {
+    if (stick || !cur) return 0;
+    const at = unreadFrom[cur];
+    if (!at) return 0;
+    return Math.max(0, all.length - at.count) + (lastLen > at.len ? 1 : 0);
   });
+
+  // The container is keyed per session, so it mounts exactly as the view lands
+  // on one: that is where that session's unread window starts (the entries the
+  // switch brought are seen, the ones that arrive after are not). `untrack`
+  // keeps the entries out of the effect's dependencies: it fires on the mount,
+  // not on the activity the pill counts.
+  $effect(() => {
+    if (el) untrack(startUnread);
+  });
+
   // Pin (the Chat pattern): when the rendered set changes and the stick flag
   // is set, end-align the last item. A scrollTo to the current position is a
   // browser no-op, so an already-at-bottom pin is a fixed point.
@@ -141,7 +166,7 @@
     if (!ref) return;
     const n = all.length;
     if (n === 0) return;
-    if (!shouldStickToBottom || !el) return;
+    if (!stick || !el) return;
     if (el.scrollHeight > el.clientHeight) {
       ref.scrollToIndex(n - 1, { align: 'end' });
     }
@@ -154,7 +179,7 @@
   $effect(() => {
     if (!trackEl) return;
     const ro = new ResizeObserver(() => {
-      if (!ref || !shouldStickToBottom) return;
+      if (!ref || !stick) return;
       // A list that fits needs no pin: pinning it leaves virtua's base offset
       // stale — the same reason the count-pin guards on overflow.
       if (!el || el.scrollHeight <= el.clientHeight) return;
@@ -179,11 +204,14 @@
 
   function onVirtuaScroll(offset: number): void {
     if (!ref) return;
-    // The blessed stick-to-bottom check: at the bottom within a sub-pixel
+    // The blessed stick-to-bottom check: at the tail within a sub-pixel
     // tolerance. Scrolling up drops below the tolerance and releases the pin —
-    // no direction tracking.
-    shouldStickToBottom =
-      offset - ref.getScrollSize() + ref.getViewportSize() >= STICK_TOLERANCE;
+    // no direction tracking. The release is the moment the view stops seeing
+    // what arrives, so it sets the pill's baseline; the return clears it.
+    const atTail = offset - ref.getScrollSize() + ref.getViewportSize() >= STICK_TOLERANCE;
+    if (atTail) clearUnread();
+    else if (stick) startUnread();
+    setStick(atTail);
     const c = cur;
     const n = all.length;
     if (!c || n === 0) return;
@@ -241,7 +269,7 @@
   // entry is the pin effect's own work).
   $effect(() => {
     void store.tailJump;
-    shouldStickToBottom = true;
+    setStick(true);
   });
 
   // V2 turn headers: 'you' on the user's own messages, 'agent' on the first
@@ -330,8 +358,10 @@
         class="pill"
         type="button"
         onclick={() => {
-          shouldStickToBottom = true;
-          newCount = 0;
+          // The pill is the user asking for the tail: the click clears the
+          // unread baseline and re-arms the pin.
+          clearUnread();
+          setStick(true);
           if (ref) ref.scrollToIndex(all.length - 1, { align: 'end' });
         }}
       >↓ {newCount} new</button>
