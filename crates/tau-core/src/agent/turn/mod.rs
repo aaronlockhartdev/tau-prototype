@@ -1,5 +1,5 @@
 use super::{
-    AgentError, AgentSession, InputEntry, Lane, Ordering, Queued, ResponseRequest, ToolBatchPolicy,
+    AgentError, AgentSession, InputEntry, Lane, Queued, ResponseRequest, ToolBatchPolicy,
     TurnConfig, TurnResult, Value, lane_name,
 };
 use crate::provider::{StreamOutcome, ToolSpec};
@@ -23,7 +23,7 @@ impl AgentSession {
         loop {
             // A stop set while the previous turn ran (or before the first):
             // drain nothing further.
-            if self.stop.load(Ordering::SeqCst) {
+            if self.flags.stop_requested() {
                 return Ok(());
             }
             let Some(starter) = self.inner.lock().queue.pop_front() else {
@@ -50,7 +50,7 @@ impl AgentSession {
         // A force send or stop that targeted this turn is captured before the
         // call loop clears the per-call kill flag; it marks every segment of
         // the turn interrupted, not just the one cut mid-flight.
-        let turn_killed = self.kill.load(Ordering::SeqCst) || self.stop.load(Ordering::SeqCst);
+        let turn_killed = self.flags.cut();
         // A force/stop that landed before the turn applies to the first call
         // only; later calls in the turn are fresh.
         let mut first_call = true;
@@ -137,19 +137,14 @@ impl AgentSession {
             );
             // A force has already killed the stream it targeted; every
             // fresh call starts un-killed (spec §7).
-            self.kill.store(false, Ordering::SeqCst);
+            self.flags.clear_kill();
             // The call's assistant entry is minted up front (ADR-0008):
             // the streamed deltas and the final append share the one id.
             let (entry_id, delta) = {
                 let mut inner = self.inner.lock();
                 (inner.store.mint_id()?, inner.stream_delta_hook.clone())
             };
-            let mut sink = StreamEntrySink::new(
-                entry_id.clone(),
-                self.kill.clone(),
-                self.stop.clone(),
-                delta,
-            );
+            let mut sink = StreamEntrySink::new(entry_id.clone(), self.flags.clone(), delta);
             let mut result = match self.provider.call(&request, &mut sink).await {
                 Ok(result) => result,
                 // A prefill rejection: the sink is untouched, so the same
@@ -174,10 +169,7 @@ impl AgentSession {
             // (stop button, force send — #229) and how the *provider* ended the
             // response (#307). A stop the user asked for already rides the entry
             // as `interrupted`; only a cut nobody asked for is a cutoff.
-            let cut_by_user = (turn_killed && first_call)
-                || self.kill.load(Ordering::SeqCst)
-                || self.stop.load(Ordering::SeqCst)
-                || self.closed.load(Ordering::SeqCst);
+            let cut_by_user = (turn_killed && first_call) || self.flags.finished();
             // The stream's end carries the same interruption the entry
             // carries: a force send cuts on the loop's own kill flag, which
             // the forwarding seam never sees, so the seam cannot derive this
@@ -269,7 +261,7 @@ impl AgentSession {
         }
         // A force/stop that cut this turn is consumed here: it must not bleed
         // into the next turn (the one a force send starts).
-        self.kill.store(false, Ordering::SeqCst);
+        self.flags.clear_kill();
         Ok(())
     }
     /// One provider request, assembled from the turn's parts: the output cap

@@ -1,4 +1,4 @@
-use crate::agent::{AgentError, AgentSession, Entry, FunctionCall, Ordering, Value, tools};
+use crate::agent::{AgentError, AgentSession, Entry, FunctionCall, Value, tools};
 use std::collections::{HashMap, HashSet};
 use tau_protocol::EntryKind;
 
@@ -35,14 +35,6 @@ fn same_file_edit_conflicts(calls: &[FunctionCall]) -> HashSet<usize> {
 }
 
 impl AgentSession {
-    /// #222: a user stop cancels the in-flight tool batch. The call it
-    /// reaches is recorded as cancelled (its in-flight process, if any, is
-    /// already killed by the tool's own stop flag), and the rest of the
-    /// batch is not executed.
-    fn stop_requested(&self) -> bool {
-        self.stop.load(Ordering::SeqCst)
-    }
-
     fn cancelled_tool_entry(&self, call: &FunctionCall) -> Result<(), AgentError> {
         let entry_id = self.inner.lock().store.mint_id()?;
         self.append_id(
@@ -66,7 +58,7 @@ impl AgentSession {
     pub(super) async fn run_tools(&self, calls: &[FunctionCall]) -> Result<(), AgentError> {
         let bad_edits = same_file_edit_conflicts(calls);
         for (ci, call) in calls.iter().enumerate() {
-            if self.stop_requested() {
+            if self.flags.stop_requested() {
                 // A stop landed before this call dispatched: record the
                 // cancellation and drop the rest of the batch (#222).
                 self.cancelled_tool_entry(call)?;

@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::agent::testkit::*;
 use crate::provider::canned_cut;
@@ -554,6 +554,75 @@ async fn stop_cancels_an_inflight_bash() {
             .skip(tool_pos + 1)
             .any(|k| *k == EntryKind::Assistant),
         "no assistant segment after the cancelled tool: {kinds:?}"
+    );
+}
+
+/// A force is not a stop (#222 reads the stop alone): its kill cuts the
+/// stream, and the tool batch it leaves runs to the end — every call records
+/// ok, none cancelled.
+#[tokio::test]
+async fn a_force_does_not_cancel_the_rest_of_the_tool_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    // The first bash opens its marker file and sleeps; the force lands in that
+    // window, so the second call's dispatch is decided with the kill set.
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        sse(
+            "",
+            &[
+                (
+                    "bash".into(),
+                    "c1".into(),
+                    format!(
+                        r#"{{"command":"echo start > {}; sleep 1"}}"#,
+                        first.display()
+                    ),
+                ),
+                (
+                    "bash".into(),
+                    "c2".into(),
+                    format!(r#"{{"command":"echo b > {}"}}"#, second.display()),
+                ),
+            ],
+        ),
+        sse("done", &[]),
+    ]));
+    let agent = make_agent(dir.path(), provider);
+    agent.send("go", Lane::FollowUp);
+    let forcer = {
+        let agent = agent.clone();
+        tokio::spawn(async move {
+            while !first.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            agent.send("FORCE", Lane::Force);
+        })
+    };
+    agent.process().await.unwrap();
+    forcer.await.unwrap();
+    let entries = entries_of(&agent.inner.lock().store);
+    let tools: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e.kind == EntryKind::Tool)
+        .map(|e| &e.payload)
+        .collect();
+    assert_eq!(tools.len(), 2, "one entry per call: {tools:?}");
+    for call_id in ["c1", "c2"] {
+        let tool = tools
+            .iter()
+            .copied()
+            .find(|p| p["call_id"] == call_id)
+            .expect("call entry");
+        assert_eq!(
+            tool["status"], "ok",
+            "{call_id} ran, not cancelled: {tool:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(second).unwrap().trim(),
+        "b",
+        "the second call dispatched"
     );
 }
 

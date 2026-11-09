@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::sync::atomic::Ordering;
 
 use super::*;
 use crate::harness::SessionRole;
