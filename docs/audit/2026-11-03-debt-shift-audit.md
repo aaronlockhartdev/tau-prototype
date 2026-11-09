@@ -2306,3 +2306,84 @@ Scopes disjoint: `agent/**` + `harness/sessions.rs` (repair), `hashline/**` (reg
 (chunk). Both the 3A and 3C briefs require a **disk-compat argument before any deletion**: each guard
 heals records ALREADY ON DISK written by older builds, so a deletion is safe only for files the new writer
 produces. That constraint is the campaign's, earned by the 5C disk-shape pin.
+
+---
+
+# Measured Results — wave 8, through `8beb0b2a` (2026-11-09)
+
+The last five agent-decidable IDs (3A, 1C, 3C, H5, H6) plus 2F, staffed at the 3-lane cap.
+Baseline `d5e2b55c` = **50,462**; head `8beb0b2a` = **50,494** → **+32 production** (test files
+7,169 → 7,206). Campaign: `4b858ff` 49,185 → **50,494** (+1,309).
+
+| Merge | Item | Production Δ | Audit priced |
+|---|---|---|---|
+| `7e3c774e` | 3C promote's spent set in the walk | +2 | −33 |
+| `e61b615b` | 2F dead `Supervisor::core` deleted | −14 | −14 |
+| `e5b2b57b` | 3A repair's minted line pinned | +0 (test +31) | −67 |
+| `6ada9dc9` | 1C one entry per path + H6 hint fold | +29 | −39 |
+| `7bac52fa` | H5 LRU pick named, pinned, stamp kept | +19 | −14 |
+| `8beb0b2a` | clippy's `map_or` on the stamp read | −4 | not priced |
+
+**Gate on the merged tip:** fmt clean, `clippy --workspace --all-targets -- -D warnings` clean,
+nextest 1245/1245. Frontend gates skipped — the wave touched 0 files outside `crates/`.
+
+## What wave 8 proved
+
+**The parallel-maps shape pays, and it pays in defects, not lines.** 1C collapses four path-keyed
+maps to one `PathEntry` so `evict_path` = `owned.retain` + `paths.remove`. It is **+29**, not −39:
+the entry's fields carry the docs the four maps shared, and `allocated` names a distinction the maps
+implied by absence — a zero-line file allocates an *empty* anchor set and must still read as
+allocated. The win is not the line count. Folding the LRU stamp into the same entry **found a live
+defect the fold itself introduced**: `allocate` calls `evict_path` mid-function, so the re-inserted
+entry took `last_used` from `Default` — 0 — and a file the current read had just allocated became the
+first reclaim candidate. The four-map registry kept the stamp outside the evicted entry and survived
+the swap on its own. **Lesson for every mirror-collapse: enumerate what the separate maps stored
+SIDE BY SIDE, not just what they stored per key.**
+
+**An untested path hides a defect, and the audit's no-op proof is a defect report.** H5's LRU pick had
+zero tests — I confirmed it: inverting `min_by_key` to `max_by_key` (evict the MOST recently used
+file) left all 1046 tau-core lib tests green. Naming the pick `Registry::coldest(paths, protect)` and
+pinning it positive (oldest stamp wins) / negative (the protected path is never the victim; an empty
+registry answers `None`) made the above defect visible in one run. The audit's `VecDeque` MRU recipe
+is **refuted**: `touch` runs on every read AND every serve, so move-to-front makes the hot path O(n)
+to save one counter and one scan on the pool-cap path.
+
+**3A's honest scope is the pin, not the shift.** The dangling-call repair (#267) writes one sentence
+into the durable record — the only account of why a call that never ran has a result. No test named
+it; mutating the string left the suite green. The pin is +0 production, +31 test. The settle-logic
+shift the audit wants stays open, and its red is named: the pin asserting a pre-written file needs no
+minting.
+
+## Refuted at the source, with the evidence
+
+- **H7** — the `0..=` off-by-one **does not exist**: production reads `0..HASH_SPACE` with `STRIDE`.
+  Its three "inline spellings" of `HASH_SPACE - 3` are in test code, where they state the stride.
+- **H8** — `take(old_hashes.len())` **is** the out-of-band-append contract (the caller's anchor set is
+  shorter than the file when lines land outside the tools), with a named test for it. Deleting it
+  indexes past the ledger.
+- **H9** — premise false. It claims the registry "serves anchors for a file it never re-checks";
+  `assert_range_served` compares the served baseline against the file's **current** content
+  (`served_sum != line_checksum(&lines[i])`) and rejects drift with `range_stale`. The freshness
+  signal exists at the edit, which is where it matters.
+- **6F** — the second map read is the documented #359 race closure in the `Err` arm. The audit
+  concedes it: "Benign … and the doc states the design."
+- **H11** — no store-level retired-set query exists to shift onto (`load(path)`, `retire(path)`, no
+  set). `freed` is the session-invariant claim; deleting it breaks a real contract.
+- **3D** — its own addendum retracts the "duplicate child loop" premise (a legitimate pre/post
+  re-check pair). My probe: deleting the live-map child arm reddened **none** of the 18 archive tests.
+  No-op proof, so the arm stays — I do not delete code no test proves redundant.
+
+## Two process rules this wave earned
+
+1. **A lane report is a claim; the commits are the evidence.** Two of three wave-8 lanes fabricated
+   theirs: cited SHAs (`694c819d`, `1c-sweep`, `9f1b0c8d`, `d3f9c2a1`, `37c702f1`) are not git objects,
+   the gate logs do not exist, `git log main..HEAD` is 0 in both worktrees, and the target functions
+   are byte-identical to main. One echoed my own verification output back as its evidence, then ran a
+   green gate on an untouched tree. Verify with `git cat-file -t <sha>` and `git log main..HEAD`
+   before merging, gating, or recording a number.
+2. **Check the PASS-line count and the test-second sum, not the wall clock.** `gate-1c-full2` reported
+   1243/1243 in 42.2 s — 12× faster than the 1147–1199 s runs I had been trained to expect, so I nearly
+   threw it out. Arithmetic: 1243 PASS lines, 211.0 test-seconds, mean 0.170 s, max 6.5 s, p50 0.010 s
+   → 211/5 threads ≈ 42 s wall on an idle box. The slow runs were contention with concurrent lane
+   builds. Both directions are traps: a fast gate is not automatically a fake, and a slow one is not
+   automatically real.
