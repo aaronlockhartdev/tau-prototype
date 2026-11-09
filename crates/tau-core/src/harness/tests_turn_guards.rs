@@ -381,6 +381,17 @@ async fn a_reopened_session_repairs_dangling_tool_calls() {
         Some("error"),
         "the minted entry carries the error status"
     );
+    // The minted text is the record's only account of why a call that never
+    // ran has a result: a user reads it, so it is asserted, not free to
+    // drift (#267).
+    assert_eq!(
+        repaired
+            .payload
+            .get("output")
+            .and_then(serde_json::Value::as_str),
+        Some("turn was interrupted before tool execution completed"),
+        "the minted entry says what happened"
+    );
     // After the repair the session accepts a new message: the dispatch
     // starts a turn, which settles.
     core.dispatch(Command::MessageSend {
