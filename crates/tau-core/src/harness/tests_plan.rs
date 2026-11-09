@@ -572,10 +572,6 @@ async fn a_spawned_child_prompt_names_its_own_plan_file() {
         .agent
         .subagents()
         .expect("the root session carries a supervisor");
-    assert!(
-        sup.core().is_some(),
-        "production root: the supervisor carries the core"
-    );
 
     let parent_plan = crate::plan::path(&cwd, &meta.id);
     let spawned = sup

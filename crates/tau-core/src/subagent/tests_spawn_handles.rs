@@ -39,7 +39,6 @@ fn re_opened(
         types: vec![crate::agent_type::builtin_general()],
         bridge,
         driver: Arc::new(TestDriver),
-        core: None,
         parent_entries: None,
     });
     sup.attach_parent(parent);

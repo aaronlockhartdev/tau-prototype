@@ -143,7 +143,6 @@ async fn a_md_type_configures_the_child_prompt_model_and_tools() {
         types,
         bridge: subagent_bridge,
         driver: Arc::new(TestDriver),
-        core: None,
         parent_entries: None,
     });
     let mut store = SessionStore::for_workspace(dir.path(), "parent");
@@ -228,7 +227,6 @@ async fn a_general_child_inherits_the_catalog_carrying_prompt() {
         types: crate::agent_type::discover(None, dir.path()),
         bridge: subagent_bridge,
         driver: Arc::new(TestDriver),
-        core: None,
         parent_entries: None,
     });
     let mut store = SessionStore::for_workspace(dir.path(), "parent");
@@ -311,7 +309,6 @@ async fn the_depth_cap() {
             depth,
             bridge: subagent_bridge,
             driver: Arc::new(TestDriver),
-            core: None,
             parent_entries: None,
         })
     };
@@ -392,7 +389,6 @@ async fn a_stop_resume_in_the_drive_window_does_not_double_drive() {
         types: vec![crate::agent_type::builtin_general()],
         bridge: subagent_bridge,
         driver: driver.clone(),
-        core: None,
         parent_entries: None,
     });
     let mut store = SessionStore::for_workspace(dir.path(), "parent");
