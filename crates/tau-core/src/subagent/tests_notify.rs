@@ -94,7 +94,6 @@ async fn an_observed_done_is_confirmed_by_the_complete_plan() {
         types: vec![crate::agent_type::builtin_general()],
         bridge: subagent_bridge,
         driver: Arc::new(TestDriver),
-        core: None,
         parent_entries: None,
     });
     let parent = Arc::new(AgentSession::new(SessionParams {

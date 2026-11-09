@@ -47,7 +47,6 @@ fn harness_with_gate(
         types,
         bridge: bridge.clone(),
         driver: Arc::new(TestDriver),
-        core: None,
         parent_entries: None,
     });
     // The spawn resolves the parent through the supervisor's `Weak` link,

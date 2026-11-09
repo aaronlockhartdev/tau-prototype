@@ -47,7 +47,6 @@ fn sup_with_parent(
         depth: 0,
         bridge: subagent_bridge,
         driver: Arc::new(TestDriver),
-        core: None,
         parent_entries: None,
     });
     // A scripted parent loop: the parent is a full session, and the `Seam`

@@ -449,7 +449,6 @@ fn root_session(
         driver: Arc::new(TurnChildDriver {
             core: Arc::downgrade(core),
         }),
-        core: Some(Arc::downgrade(core)),
         // The whole log by design (#302): these are the spawn-provenance
         // records of this session's children, and a spawn record lives on the
         // branch that was current when the child spawned — a parent that

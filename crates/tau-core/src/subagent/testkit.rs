@@ -241,7 +241,6 @@ pub(crate) fn harness_full(
         types: vec![crate::agent_type::builtin_general()],
         bridge: bridge.clone(),
         driver: Arc::new(TestDriver),
-        core: None,
         parent_entries: None,
     });
     // A scripted parent loop (the parent is a full session): the

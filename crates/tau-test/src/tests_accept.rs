@@ -255,7 +255,6 @@ pub(crate) async fn accept_subagent(ctx: &Ctx) -> Result<(), String> {
         types: vec![builtin_general()],
         bridge: bridge.clone(),
         driver: Arc::new(AcceptanceDriver),
-        core: None,
         parent_entries: None,
     });
     let agent = AgentSession::launch(
@@ -432,7 +431,6 @@ pub(crate) async fn accept_reclaim(ctx: &Ctx) -> Result<(), String> {
         types: vec![builtin_general()],
         bridge: bridge.clone(),
         driver: Arc::new(AcceptanceDriver),
-        core: None,
         parent_entries: None,
     });
     let agent = AgentSession::launch(
@@ -608,7 +606,6 @@ pub(crate) async fn accept_sender_labels(ctx: &Ctx) -> Result<(), String> {
         types: vec![builtin_general()],
         bridge: bridge.clone(),
         driver: Arc::new(AcceptanceDriver),
-        core: None,
         parent_entries: None,
     });
     let agent = AgentSession::launch(

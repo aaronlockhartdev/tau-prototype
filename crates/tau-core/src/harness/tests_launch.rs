@@ -360,7 +360,6 @@ fn launch_seam_session_is_freed_when_dropped() {
         depth: 0,
         bridge,
         driver: Arc::new(TestDriver),
-        core: None,
         parent_entries: None,
     });
     let stop = Arc::new(AtomicBool::new(false));

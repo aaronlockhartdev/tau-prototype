@@ -74,7 +74,6 @@ pub struct Supervisor {
     hashline: crate::hashline::pin_store::GcPolicy,
     bridge: Arc<dyn SubagentBridge>,
     driver: Arc<dyn ChildDriver>,
-    core: Option<Weak<crate::harness::Core>>,
     // The children map needs no self-reference: the one operation that needs
     // an `Arc<Supervisor>` — re-adopt, which builds a child's `ChildLink` —
     // takes it from the `Arc` the caller holds (`self: &Arc<Self>`), so a
@@ -121,10 +120,6 @@ pub struct SupervisorParams {
     pub types: Vec<crate::agent_type::AgentType>,
     pub bridge: Arc<dyn SubagentBridge>,
     pub driver: Arc<dyn ChildDriver>,
-    /// The core the parent session runs under (production): the plan-file
-    /// wiring (seed, the prompt's path, the state re-injection) routes
-    /// through it. `None` on the test seams (no plan wiring).
-    pub core: Option<Weak<crate::harness::Core>>,
     /// The parent's in-memory entries, threaded from the open path (issue
     /// #280): a re-opened session already holds its full entry list, so the
     /// handle-count seed and the snapshot's fleet projection read it from
@@ -192,7 +187,6 @@ impl Supervisor {
             hashline: p.hashline,
             bridge: p.bridge,
             driver: p.driver,
-            core: p.core,
         })
     }
 
@@ -295,13 +289,6 @@ impl Supervisor {
     /// spawned under; its parent's fleet arithmetic follows the new numbers.
     pub(crate) fn set_subagents(&self, caps: SubAgents, types: Vec<crate::agent_type::AgentType>) {
         *self.fleet.lock() = (caps, types);
-    }
-
-    /// The core link (production); `None` on the test seams (no plan
-    /// wiring).
-    #[must_use]
-    pub fn core(&self) -> Option<Weak<crate::harness::Core>> {
-        self.core.clone()
     }
 
     /// The parent's session id (the supervisor's own — the child's
