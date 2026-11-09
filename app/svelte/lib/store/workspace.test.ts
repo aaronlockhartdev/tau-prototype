@@ -14,11 +14,13 @@ import {
   applyEvents,
   closeWorkspace,
   closeWorkspaces,
+  openWorkspace,
   send,
   store,
   switchSession,
   tabSelect
 } from './store.svelte';
+import { defaultPane } from '../rules/panes';
 import { WS, bindIPC, freshStore, meta, snap, sub } from '../testing/store-harness';
 
 const { mockIPC, defaultIPC } = bindIPC(mockInvoke);
@@ -92,6 +94,30 @@ describe('session switch', () => {
     expect(store.sessions['p']!.subagents).toEqual([sub('c', { state: 'done' })]);
   });
 
+  // FE4's shape: the pane's view state is created where the workspace is —
+  // the pane's read is then total for an open workspace, and no component
+  // effect mints state as a side effect.
+  it('opening a workspace seeds its pane', async () => {
+    defaultIPC();
+    await openWorkspace(WS);
+    expect(store.pane[WS.id]).toEqual(defaultPane());
+  });
+
+  it('a pane with user state survives the workspace re-open (no reseed over the tab)', async () => {
+    store.pane[WS.id] = { ...defaultPane(), ltab: 'files' };
+    defaultIPC();
+    await openWorkspace(WS);
+    expect(store.pane[WS.id]!.ltab).toBe('files');
+  });
+
+  it('closing a workspace drops its pane with the tab', async () => {
+    store.workspaces = [WS];
+    store.sessions = applySessionList({}, [meta('s1')]);
+    store.pane[WS.id] = defaultPane();
+    mockIPC(() => ({ kind: 'none' }));
+    await closeWorkspace(WS);
+    expect(store.pane[WS.id]).toBeUndefined();
+  });
   it('a branch_move event moves the leaf', () => {
     store.sessions = openSession({}, 's1', snap('s1').snapshot);
     applyEvents([

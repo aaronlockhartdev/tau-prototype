@@ -10,6 +10,7 @@ import { userEvent } from '@testing-library/user-event';
 import type { FileEntry, SessionMeta } from '../lib/wire/protocol';
 import type { SessionState } from '../lib/rules/sessions';
 import LeftPane from './LeftPane.svelte';
+import { defaultPane } from '../lib/rules/panes';
 import {
   mockStore,
   newSession,
@@ -59,16 +60,18 @@ type SeedOver = Partial<{
 }>;
 
 function seed(over: SeedOver = {}): void {
+  // FE4: the pane's view state comes from the workspace's producer in the app,
+  // and from here in a test — the component mints none as a render side effect.
   resetMockStore({
     current: 's1',
     sessions: { s1: seedState(meta('s1')) },
+    pane: { [WS]: defaultPane() },
     ...over
   });
 }
 
 async function mount(): Promise<void> {
   render(LeftPane);
-  // The ensurePane effect creates the pane after the first render.
   await tick();
 }
 

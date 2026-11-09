@@ -15,7 +15,7 @@ import { runSessionCommand, switchSession } from './commands';
 import { pruneSession } from '../rules/entryopen';
 import { ensureWorkspace, removeWorkspace } from '../rules/files';
 import { applyTabSelect } from '../rules/panes';
-import { clearError, store } from './state.svelte';
+import { clearError, ensurePane, store } from './state.svelte';
 import { fetchDir, refreshGitStatus } from './files-pane.svelte';
 import { dropWorkspaceDocs } from '../rules/activedoc';
 
@@ -120,8 +120,11 @@ async function openWorkspaceInner(ws: Workspace): Promise<void> {
   // entries hydrate lazily when one is opened.
   if (list.kind === 'sessions') store.sessions = applySessionList(store.sessions, list.sessions);
   // The pane's first listing (ticket #32): the root, listed on open —
-  // every other dir is fetched on expansion.
+  // every other dir is fetched on expansion. The pane's view state is seeded
+  // here too (FE4): the workspace is the pane's producer, so the panes' reads
+  // are total for an open workspace and no component effect mints state.
   store.files = ensureWorkspace(store.files, real.id);
+  ensurePane(real.id);
   void fetchDir(real.id, '.');
   void refreshGitStatus(real.id);
   // Archived sessions are listed (for the archive folder) but can't be

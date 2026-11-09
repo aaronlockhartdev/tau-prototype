@@ -9,6 +9,7 @@ import type { SessionMeta, SubagentInfo } from '../lib/wire/protocol';
 import { subInfo, type SubFixture } from '../lib/testing/state';
 import type { SessionState } from '../lib/rules/sessions';
 import RightPane from './RightPane.svelte';
+import { defaultPane } from '../lib/rules/panes';
 import {
   mockStore,
   switchSession,
@@ -56,7 +57,10 @@ function seed(over: SeedOver = {}): void {
   };
   resetMockStore({
     current: over.current === undefined ? 's1' : over.current,
-    sessions
+    sessions,
+    // FE4: the pane's view state comes from the workspace's producer in the app,
+    // and from here in a test — the component mints none as a render side effect.
+    pane: { [WS]: defaultPane() }
   });
 }
 

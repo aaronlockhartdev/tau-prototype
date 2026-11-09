@@ -6,7 +6,7 @@
   // rule: top-level rows are badged `running` only while the model is
   // generating or a sub-agent is running (inactive = untagged); sub-agent
   // rows keep their full lifecycle tags.
-  import { store, pane, ensurePane, newSession, retryDirFetch, currentSession, fileCache, attention, type PaneState } from '../lib/store/store.svelte';
+  import { store, pane, newSession, retryDirFetch, currentSession, fileCache, attention, type PaneState } from '../lib/store/store.svelte';
   import { onActivate } from '../lib/display/ui';
   import SessionNode from './SessionNode.svelte';
   import { groupIsOpen } from '../lib/rules/sessions';
@@ -14,12 +14,11 @@
   import FileNode from './FileNode.svelte';
   import { bucketAge } from '../lib/display/format';
 
+  // The pane's view state is created by the workspace's producer (FE4), so a
+  // pane read here is the state the workspace opened with — never a state this
+  // component mints as a render side effect.
   const ws = $derived(currentSession()?.meta.workspace ?? null);
   const p = $derived<PaneState | null>(pane(ws));
-  $effect(() => {
-    if (ws) ensurePane(ws);
-  });
-
   const sessions = $derived.by(() => {
     if (ws === null) return [];
     return Object.values(store.sessions).filter((s) => s.meta.workspace === ws);

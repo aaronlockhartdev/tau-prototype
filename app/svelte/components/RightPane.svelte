@@ -7,7 +7,7 @@
   // the session's own parsed plan file (spec §5.3). Last-modified sorted;
   // the panel renders a tree (nesting supported) — double-click opens the
   // sub-agent's session, which is an ordinary session (a tab opens for it).
-  import { store, pane, ensurePane, switchSession, currentSession, setFollow, type PaneState } from '../lib/store/store.svelte';
+  import { store, pane, switchSession, currentSession, setFollow, type PaneState } from '../lib/store/store.svelte';
   import { fmtK } from '../lib/display/format';
   import { ChevronDown } from '@lucide/svelte';
   import { onActivate } from '../lib/display/ui';
@@ -18,11 +18,8 @@
 
   const cur = $derived(currentSession());
   const ws = $derived(cur?.meta.workspace ?? null);
+  // The pane's view state is created by the workspace's producer (FE4).
   const p = $derived<PaneState | null>(pane(ws));
-  $effect(() => {
-    if (ws) ensurePane(ws);
-  });
-
 
   const subs = $derived(cur ? cur.subagents : []);
   // A child is live while its badge is `running` or `idle` (the typed state's
