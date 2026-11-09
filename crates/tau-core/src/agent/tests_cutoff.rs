@@ -119,6 +119,51 @@ async fn every_incomplete_reason_reads_as_no_completion() {
     }
 }
 
+/// A session closed while its turn runs: the segment the record carries is an
+/// interrupted one, and the close is no provider cutoff (`cut_by_user`
+/// outranks the provider's ending, #307).
+#[tokio::test]
+async fn a_closed_sessions_turn_is_recorded_interrupted() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![sse("done", &[])]));
+    let agent = make_agent(dir.path(), provider);
+    agent.send("go", Lane::FollowUp);
+    // The close lands while the turn is in flight, and is not cleared by anything.
+    agent.mark_closed();
+    agent.process().await.unwrap();
+    let entries = entries_of(&agent.inner.lock().store);
+    assert_eq!(
+        entries.iter().map(|e| e.kind.clone()).collect::<Vec<_>>(),
+        vec![EntryKind::User, EntryKind::Assistant],
+        "the closed session's turn leaves no cutoff diagnostic"
+    );
+    assert!(
+        entries[1].payload["interrupted"].as_bool().unwrap(),
+        "a close marks the segment interrupted: {:?}",
+        entries[1]
+    );
+}
+
+/// The pair: the same stream in a session that stays open is a clean segment.
+#[tokio::test]
+async fn a_turn_of_an_open_session_is_not_interrupted() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(vec![sse("done", &[])]));
+    let agent = make_agent(dir.path(), provider);
+    agent.send("go", Lane::FollowUp);
+    agent.process().await.unwrap();
+    let entries = entries_of(&agent.inner.lock().store);
+    assert_eq!(
+        entries.iter().map(|e| e.kind.clone()).collect::<Vec<_>>(),
+        vec![EntryKind::User, EntryKind::Assistant]
+    );
+    assert!(
+        !entries[1].payload["interrupted"].as_bool().unwrap(),
+        "nothing asked for a cut: {:?}",
+        entries[1]
+    );
+}
+
 #[test]
 fn a_user_cut_outranks_a_provider_cut() {
     // One entry tells one cause: a stop the user asked for silences the

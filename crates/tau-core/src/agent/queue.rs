@@ -1,6 +1,6 @@
 use super::{AgentSession, Lane, Queued};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use tau_protocol::EntryKind;
 
 /// The next queued item's id, minted from the session's monotonic counter:
@@ -23,7 +23,7 @@ impl AgentSession {
         source: Option<String>,
     ) {
         let mut inner = self.inner.lock();
-        self.stop.store(false, Ordering::SeqCst);
+        self.flags.clear_stop();
         let msg = Queued {
             id: new_queue_id(&mut inner.queue_seq),
             text: text.into(),
@@ -33,7 +33,7 @@ impl AgentSession {
             entry_id: None,
         };
         if lane == Lane::Force {
-            self.kill.store(true, Ordering::SeqCst);
+            self.flags.set_kill();
             inner.queue.push_front(msg);
         } else {
             inner.queue.push_back(msg);
@@ -87,7 +87,7 @@ impl AgentSession {
     /// between the wake and the entry's `lane` payload).
     fn queue_notified(&self, text: impl Into<String>, source: String) {
         let mut inner = self.inner.lock();
-        self.stop.store(false, Ordering::SeqCst);
+        self.flags.clear_stop();
         let text = text.into();
         // The report's entry is minted now and its upsert fires now — the
         // GUI shows it while the parent's turn is in flight — but the file
@@ -139,7 +139,7 @@ impl AgentSession {
     /// including during the prefill window, before the first token — and
     /// stays set until the next send.
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.flags.set_stop();
     }
 
     /// Delete a queued message by its queue id (the id every projection
@@ -160,13 +160,13 @@ impl AgentSession {
         // Session close kills the session's background jobs (#53): their
         // children die with the session, not after it.
         self.background_jobs().kill_all();
-        self.closed.store(true, Ordering::SeqCst);
+        self.flags.set_closed();
     }
 
     /// The persistent stop flag (a forwarding seam can share it so one
     /// flag cuts at both the transport mirror and the loop sink).
     pub(crate) fn stop_flag(&self) -> Arc<AtomicBool> {
-        self.stop.clone()
+        self.flags.stop_flag()
     }
 
     /// Whether a queued message is waiting (a parked sub-agent with a

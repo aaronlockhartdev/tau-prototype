@@ -18,7 +18,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use tau_protocol::OmStatusKind;
 #[cfg(test)]
 pub(crate) use tau_protocol::{Diagnostic, EntryKind};
@@ -461,7 +461,6 @@ pub(crate) struct SessionParams {
     /// The child-side link (ticket #23); `None` for non-child sessions.
     pub child: Option<Arc<crate::subagent::ChildLink>>,
 }
-
 /// Where the memory passes run (#348, §6.7). The harness resolves
 /// `[om].om_model` into this — the agent has no config to route with — and
 /// re-derives it from the live config at the turn boundary (#337).
@@ -500,15 +499,7 @@ impl std::fmt::Debug for OmRoute {
 pub struct AgentSession {
     inner: Arc<Mutex<Inner>>,
     provider: TurnProviderRef,
-    kill: Arc<AtomicBool>,
-    /// Persistent stop (ticket #23): unlike the per-call kill flag (reset
-    /// at each call), it stays set until the next send — a sub-agent soft
-    /// stop cuts the stream this way.
-    stop: Arc<AtomicBool>,
-    /// A closed session is a one-way transition: set by `SessionClose`, never
-    /// cleared (unlike `stop`, which a new send resets). Marks the in-flight
-    /// turn's segment interrupted.
-    closed: Arc<AtomicBool>,
+    flags: StopFlags,
 }
 
 impl AgentSession {
@@ -554,9 +545,7 @@ impl AgentSession {
                 job_notify_hook: None,
             })),
             provider: p.provider,
-            kill: Arc::new(AtomicBool::new(false)),
-            stop: p.stop,
-            closed: Arc::new(AtomicBool::new(false)),
+            flags: StopFlags::new(p.stop),
         }
     }
 
@@ -630,6 +619,8 @@ impl AgentSession {
     }
 }
 mod config;
+mod flags;
+pub(crate) use flags::StopFlags;
 mod gate_hook;
 mod plan;
 mod queue;

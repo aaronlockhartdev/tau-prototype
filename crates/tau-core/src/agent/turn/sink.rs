@@ -1,16 +1,15 @@
-use crate::agent::{Arc, AtomicBool, Ordering, StreamDelta, StreamDeltaHook, TurnEvent, TurnSink};
+use crate::agent::{StopFlags, StreamDelta, StreamDeltaHook, TurnEvent, TurnSink};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-/// The sink the loop gives the provider: the per-call kill flag (force)
-/// or the persistent stop flag (ticket #23) stops the stream (spec §7).
+/// The sink the loop gives the provider: the session's cut flags stop the
+/// stream (spec §7).
 /// It accumulates the streamed text and streams it to the live view as
 /// frame-aligned deltas, each carrying only the characters appended since the
 /// last (#303); the accumulation itself lands once, as the committed entry.
 pub(super) struct StreamEntrySink {
-    pub(super) kill: Arc<AtomicBool>,
-    pub(super) stop: Arc<AtomicBool>,
+    pub(super) flags: StopFlags,
     pub(super) id: String,
     /// The live growth sink; `None` = no live view, and the committed entry is
     /// the first sight of the text.
@@ -38,18 +37,12 @@ pub(super) const STREAM_INTERVAL: Duration = Duration::from_millis(16);
 
 impl StreamEntrySink {
     /// The sink one LLM call streams into: an empty accumulation at the
-    /// display's cadence (ADR-0008), the call's `kill` and `stop` flags, and
+    /// display's cadence (ADR-0008), the session's cut flags, and
     /// the live view's delta hook — `None` when no view watches the session,
     /// in which case the committed entry is the first sight of the text.
-    pub(super) fn new(
-        id: String,
-        kill: Arc<AtomicBool>,
-        stop: Arc<AtomicBool>,
-        delta: Option<StreamDeltaHook>,
-    ) -> Self {
+    pub(super) fn new(id: String, flags: StopFlags, delta: Option<StreamDeltaHook>) -> Self {
         Self {
-            kill,
-            stop,
+            flags,
             id,
             delta,
             text: String::new(),
@@ -65,7 +58,7 @@ impl StreamEntrySink {
 
 impl TurnSink for StreamEntrySink {
     fn event(&mut self, event: TurnEvent) -> bool {
-        if self.kill.load(Ordering::SeqCst) || self.stop.load(Ordering::SeqCst) {
+        if self.flags.cut() {
             return false;
         }
         match &event {
@@ -84,7 +77,7 @@ impl TurnSink for StreamEntrySink {
         true
     }
     fn stop_signal(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(stop_flags(&self.kill, &self.stop))
+        Box::pin(self.flags.cut_signal())
     }
 }
 
@@ -130,27 +123,14 @@ impl StreamEntrySink {
     }
 }
 
-/// The stop-flag poll cadence: a human clicking stop, not a tight race.
-const STOP_POLL_MS: u64 = 50;
-
-/// The prefill half of a kill/stop (spec §7): a poll over the flags so the
-/// provider tears the in-flight request down before the first stream
-/// event arrives.
-async fn stop_flags(kill: &AtomicBool, stop: &AtomicBool) {
-    loop {
-        if kill.load(Ordering::SeqCst) || stop.load(Ordering::SeqCst) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(STOP_POLL_MS)).await;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::Usage;
     use std::fmt::Write;
+    use std::sync::Arc;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
 
     /// What the sink handed the live view: every delta, and the bytes it copied
     /// to produce them — #303's measured quantity.
@@ -169,8 +149,7 @@ mod tests {
     fn sink_at(view: Arc<Mutex<View>>, interval: Duration) -> StreamEntrySink {
         let mut sink = StreamEntrySink::new(
             "a1".into(),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
+            StopFlags::new(Arc::new(AtomicBool::new(false))),
             Some(Arc::new(move |delta: &StreamDelta| {
                 let mut seen = view.lock().expect("the view collector does not panic");
                 seen.copied += delta.text.len() + delta.reasoning.len();
@@ -187,8 +166,7 @@ mod tests {
     fn a_turns_sink_streams_at_the_frame_cadence() {
         let sink = StreamEntrySink::new(
             "a1".into(),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
+            StopFlags::new(Arc::new(AtomicBool::new(false))),
             None,
         );
         assert_eq!(
@@ -291,7 +269,7 @@ mod tests {
         let view = Arc::new(Mutex::new(View::default()));
         let mut sink = sink(Arc::clone(&view));
         stream(&mut sink, 10);
-        sink.kill.store(true, Ordering::SeqCst);
+        sink.flags.set_kill();
         assert!(!sink.event(TurnEvent::Text("cut".into())));
         let seen = view.lock().expect("the view collector does not panic");
         let visible: String = seen.deltas.iter().map(|d| d.text.as_str()).collect();
