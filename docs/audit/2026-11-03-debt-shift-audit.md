@@ -2233,3 +2233,24 @@ a product decision to honor or delete), **5G** / **6C(rest)** (spec decisions), 
 the scripted provider: 264 LOC of test seam in the production binary — a packaging decision), **H3/H4**
 (need a per-file anchor index — a feature, not a deletion), **FE1** (Svelte 6), **FE10** (refuted by
 lane G: the two menus diverge on purpose), **Skill/SkillInfo** unification (net ~0).
+
+## The measuring tool's blind spot: a lane's new file is invisible pre-merge (2026-11-08)
+
+Lane X (5F) measured **−38 production** at its head and **+63** after the merge. The gap is one file:
+`agent/flags.rs`, 101 production lines, which the lane adds. `.tau/scripts/tree_loc.py` built its file
+list from `git ls-files` (the **current index**) and then read each path out of the rev — so a rev that
+*adds* a file is censused without it whenever the checkout lacks that file. Measuring a lane head while
+HEAD sits on main under-counts by every production file the lane adds. A −38 that was really +63.
+
+**Fixed** (same commit as lane X's merge): each rev is now censused from its own tree
+(`git ls-tree -r <rev>`), so the count is right at any rev pair, pre- or post-merge.
+
+**Blast radius, checked by recomputing every campaign step with the fixed script:** the published per-merge
+ledger is sound. Every wave 1–6 merge was measured *post-merge*, where the merge is in main's index, so its
+new files were visible. The recomputed table agrees with the recorded numbers on every step that added a
+file (T6 +36, lane R +64, lane T +87, lane S −112, lane U +76, lane V +51, wave 6 +221 total) and drifts by
+1–3 lines on three steps (lane P −23 vs −24; wave-3 docs split) — rounding of file-set edges, not a method
+failure. **Campaign total: 49,185 → 50,427 (+1,242) through lane X.**
+
+**Rule kept:** measure a lane's delta post-merge, or from the lane's own checkout. A pre-merge number is a
+floor, never the number.
