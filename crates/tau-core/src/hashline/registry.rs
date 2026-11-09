@@ -190,11 +190,7 @@ impl Registry {
         // read just allocated is the LAST one a reclaim should pick. The
         // four-map registry kept the stamp in a map `evict_path` also
         // cleared, and re-took it on the `touch` below.
-        let last_used = self
-            .paths
-            .get(path)
-            .map(|entry| entry.last_used)
-            .unwrap_or(0);
+        let last_used = self.paths.get(path).map_or(0, |entry| entry.last_used);
         self.evict_path(path);
         for a in &new_anchors {
             self.owned.insert(
