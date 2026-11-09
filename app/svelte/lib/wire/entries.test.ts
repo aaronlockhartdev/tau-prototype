@@ -273,7 +273,9 @@ describe('decodeEntry (the typed payload, #346)', () => {
     expect(e.text).toBe('');
   });
 
-  it('a sidecar payload is tagged by kind on the way in', async () => {
+  // The sidecar's bytes are never a claimed arm: the GUI tagged them, so the
+  // card reads them field by field, as it does any payload the core did not type.
+  it('a sidecar payload is tagged as the escape arm', async () => {
     const v = view('tool', null, { id: '00000001', size: 218_000, hash: '0'.repeat(16) });
     const views = await resolveBlobs([v], () => Promise.resolve({ name: 'read', call_id: 'c1', args: {}, output: 'file' }));
     const e = decodeEntry(views[0]!) as { name?: string; output?: string; unavailable?: boolean };
@@ -282,8 +284,101 @@ describe('decodeEntry (the typed payload, #346)', () => {
     expect(e.unavailable).toBeUndefined();
   });
 
-  it('a kind the payload module has no arm for tags as other', () => {
+  it('a stored map the GUI tagged is the escape arm, never a claimed arm', () => {
+    expect(payloadFor('tool', { note: 'x' })).toEqual({ type: 'other', data: { note: 'x' } });
     expect(payloadFor('quantum', { note: 'x' })).toEqual({ type: 'other', data: { note: 'x' } });
+  });
+
+  // The fold, positive: the core decoded the line into the arm's struct, so the
+  // arm's non-`Option` fields are there and typed — the card reads them straight.
+  it('an arm the core typed is read by construction', () => {
+    const user = decodeEntry(
+      view('user', {
+        type: 'user',
+        data: { text: 'hi — {"word":"hi"}', lane: 'steering', source: 'child-1', skill: { name: 'review', location: '/s/SKILL.md' } }
+      })
+    ) as { kind: string; text: string; lane?: string; source?: string; skill?: { name: string }; msg?: { prose: string } };
+    expect(user.text).toBe('hi — {"word":"hi"}');
+    expect(user.lane).toBe('steering');
+    expect(user.source).toBe('child-1');
+    expect(user.skill).toEqual({ name: 'review', location: '/s/SKILL.md' });
+    expect(user.msg?.prose).toBe('hi');
+
+    const assistant = decodeEntry(
+      view('assistant', {
+        type: 'assistant',
+        data: {
+          text: 'run',
+          reasoning: 'thinking',
+          interrupted: true,
+          stop_reason: 'length',
+          usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3, cached_prompt_tokens: null },
+          calls: [{ id: 'id1', call_id: 'c1', name: 'bash', arguments: '{}' }, { id: 'id2', call_id: '', name: 'read', arguments: '{}' }]
+        }
+      })
+    ) as { kind: string; reasoning?: string; endedBy?: string; calls?: string[]; usage?: { total_tokens: number } };
+    expect(assistant.kind).toBe('interrupted');
+    expect(assistant.reasoning).toBe('thinking');
+    expect(assistant.endedBy).toBe('length');
+    expect(assistant.usage?.total_tokens).toBe(3);
+    // The arm's calls are `FunctionCall`s: the card keeps the call ids that name one.
+    expect(assistant.calls).toEqual(['c1']);
+
+    expect((decodeEntry(view('system', { type: 'system', data: { note: 'a note' } })) as { text: string }).text).toBe('a note');
+  });
+
+  // An arm's non-`Option` field needs no `typeof`: the tool arm's `output` is the
+  // untagged `ToolOutput`, text or an image block (#34). The card shows the text
+  // channel and leaves the image to the attachment path.
+  it('an arm field the core typed is read without a type test', () => {
+    const image = decodeEntry(
+      view('tool', {
+        type: 'tool',
+        data: { call_id: 'c1', name: 'screenshot', args: {}, output: { type: 'image', media_type: 'image/png', data_base64: 'AAA' } }
+      })
+    ) as { name?: string; output?: string; call_id?: string };
+    expect(image.name).toBe('screenshot');
+    expect(image.call_id).toBe('c1');
+    expect(image.output).toBeUndefined();
+  });
+
+  // The fold, negative: the escape arm's bytes are hostile — every field the
+  // wrong type. It renders what it can, from the guards that stay on that path.
+  it('an escape payload with hostile bytes renders what it can', () => {
+    const user = decodeEntry(
+      view('user', { type: 'other', data: { text: 42, lane: {}, source: ['child'], skill: 'not-a-skill' } })
+    ) as { text: string; lane?: string; source?: string; skill?: { name: string }; msg?: unknown };
+    expect(user.text).toBe('');
+    expect(user.lane).toBeUndefined();
+    expect(user.source).toBeUndefined();
+    expect(user.skill).toBeUndefined();
+    expect(user.msg).toBeUndefined();
+    // A skill map whose fields are not strings is still a skill of defaults.
+    const half = decodeEntry(
+      view('user', { type: 'other', data: { text: 'x', skill: { name: 5 } } })
+    ) as { skill?: { name: string; location: string } };
+    expect(half.skill).toEqual({ name: '', location: '' });
+
+    const tool = decodeEntry(
+      view('tool', { type: 'other', data: { name: 1, call_id: 2, output: [], status: 'exploded', args: 'a string' } })
+    ) as { name?: string; call_id?: string; output?: string; status?: string; args?: unknown };
+    expect(tool.name).toBe('tool');
+    expect(tool.call_id).toBe('');
+    // The escape arm rebuilds the arm's shape, filling each field its core
+    // decoder would have typed with that field's default.
+    expect(tool.output).toBe('');
+    expect(tool.args).toBeUndefined();
+
+    const assistant = decodeEntry(
+      view('assistant', { type: 'other', data: { text: 9, reasoning: 10, interrupted: 'yes', calls: [{ call_id: 'c1' }, {}, 'x'] } })
+    ) as { kind: string; text: string; reasoning?: string; calls?: string[] };
+    expect(assistant.kind).toBe('message');
+    expect(assistant.text).toBe('');
+    expect(assistant.reasoning).toBe('');
+    expect(assistant.calls).toEqual(['c1']);
+
+    expect((decodeEntry(view('system', { type: 'other', data: { note: 7 } })) as { text: string }).text).toBe('');
+    expect((decodeEntry(view('spawn-snapshot', { type: 'other', data: { log: 8 } })) as { text: string }).text).toBe('');
   });
 });
 

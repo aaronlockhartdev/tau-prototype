@@ -6,8 +6,11 @@ import type {
   Diagnostic,
   Entry,
   EntryPayload,
+  FunctionCall,
+  SkillRef,
   SubagentPayload,
   ToolPayload,
+  Usage,
   ViewEntry
 } from './protocol';
 import { asStreamOutcome } from './protocol';
@@ -53,98 +56,151 @@ function stripObservationGroup(s: string): string {
 }
 
 // The wire's typed payload (#346) read as the fields a card needs. The core
-// types a payload by decoding it into its kind's arm; a payload that will not
-// decode rides `other` with its bytes intact. The GUI reaches both through
-// here: its own arm when the core typed it, the escape arm's map when it did
-// not — a record the core cannot type still renders what it can.
+// fills `{type, data}` by decoding the stored line into its kind's struct
+// (`EntryPayload::from_entry`), so an arm carries that struct's shape by
+// construction: its non-`Option` fields are there and typed. A payload that
+// will not decode rides `other`, with its bytes intact — the population whose
+// every field read is guarded (ADR-0005 keeps the stored line free-form).
 type PayloadOf<T extends EntryPayload['type']> = Extract<EntryPayload, { type: T }>['data'];
 
-function dataOf<T extends EntryPayload['type']>(payload: EntryPayload | null, tag: T): PayloadOf<T> {
-  const data = payload?.type === tag ? payload.data : payload?.type === 'other' ? payload.data : {};
-  return (data && typeof data === 'object' ? data : {}) as PayloadOf<T>;
+function armOf<T extends EntryPayload['type']>(
+  payload: EntryPayload | null,
+  tag: T,
+  read: (raw: Record<string, unknown>) => PayloadOf<T>
+): PayloadOf<T> {
+  return payload?.type === tag ? (payload.data as PayloadOf<T>) : read(freeform(payload));
 }
 
-// The kinds with no payload type (v0: `om`, `subagent`, `diagnostic`, and any
-// kind this build has never heard of) ride `other`, so the card reads them
-// field by field off the raw map.
+// The payload nothing typed on the way in: a kind v0 has no type for (om,
+// subagent, diagnostic, a newer kind), a line that will not decode as its
+// kind's shape, a sidecar map. Its bytes are free-form at rest (ADR-0005), so
+// every read of them is guarded.
 function freeform(payload: EntryPayload | null): Record<string, unknown> {
-  return dataOf(payload, 'other') as Record<string, unknown>;
+  return payload?.type === 'other' ? (payload.data as Record<string, unknown>) : {};
 }
 
-// A sidecar payload (ADR-0005) is fetched as the stored map, not as the wire's
-// tagged shape, so the read tags it by the entry's kind before decode. Only the
-// arm name is needed — every field read is guarded, so a map that is not its
-// arm's shape decodes to defaults, the way `other` does.
-const payloadTags: Record<string, EntryPayload['type']> = {
-  user: 'user',
-  assistant: 'assistant',
-  tool: 'tool',
-  system: 'system',
-  'spawn-snapshot': 'spawn_snapshot'
-};
+// The arm's shape rebuilt from those untyped bytes. The fallback is what the
+// field's Rust type guarantees on a decoded line; `optionalOf` mirrors a Rust
+// `Option`, where absent is the wire's own absent.
+function fieldOf(raw: Record<string, unknown>, key: string, dflt = ''): string {
+  return typeof raw[key] === 'string' ? raw[key] : dflt;
+}
 
+function optionalOf(raw: Record<string, unknown>, key: string): string | undefined {
+  return typeof raw[key] === 'string' ? raw[key] : undefined;
+}
+
+function skillOf(raw: Record<string, unknown>): SkillRef | undefined {
+  const sk = raw.skill;
+  if (!sk || typeof sk !== 'object') return undefined;
+  const { name, location } = sk as Partial<SkillRef>;
+  return {
+    name: typeof name === 'string' ? name : '',
+    location: typeof location === 'string' ? location : ''
+  };
+}
+
+function readUser(raw: Record<string, unknown>): PayloadOf<'user'> {
+  return {
+    text: fieldOf(raw, 'text'),
+    lane: fieldOf(raw, 'lane'),
+    source: optionalOf(raw, 'source'),
+    skill: skillOf(raw)
+  };
+}
+
+function readAssistant(raw: Record<string, unknown>): PayloadOf<'assistant'> {
+  return {
+    text: fieldOf(raw, 'text'),
+    reasoning: fieldOf(raw, 'reasoning'),
+    interrupted: raw.interrupted === true,
+    stop_reason: asStreamOutcome(raw.stop_reason),
+    usage: raw.usage as Usage | undefined,
+    calls: Array.isArray(raw.calls)
+      ? (raw.calls.filter((c) => typeof (c as FunctionCall | undefined)?.call_id === 'string') as FunctionCall[])
+      : []
+  };
+}
+
+function readTool(raw: Record<string, unknown>): PayloadOf<'tool'> {
+  return {
+    call_id: fieldOf(raw, 'call_id'),
+    name: fieldOf(raw, 'name', 'tool'),
+    args: raw.args,
+    output: fieldOf(raw, 'output'),
+    ui_detail: optionalOf(raw, 'ui_detail'),
+    status: raw.status === 'ok' || raw.status === 'error' || raw.status === 'cancelled' ? raw.status : undefined
+  };
+}
+
+function readSystem(raw: Record<string, unknown>): PayloadOf<'system'> {
+  return { note: fieldOf(raw, 'note') };
+}
+
+function readSpawnSnapshot(raw: Record<string, unknown>): PayloadOf<'spawn_snapshot'> {
+  return {
+    parentSession: fieldOf(raw, 'parentSession'),
+    range: fieldOf(raw, 'range'),
+    log: fieldOf(raw, 'log')
+  };
+}
+
+// A sidecar payload (ADR-0005) is the stored map, fetched as bytes nothing
+// decoded: the entry's `kind` names the entry, not a shape the bytes were
+// checked against. So it claims no arm and lands in `other`, where every
+// field read is guarded; `unavailable` comes from the pointer, not the arm.
 export function payloadFor(kind: string, raw: unknown): EntryPayload {
-  return { type: payloadTags[kind] ?? 'other', data: raw } as EntryPayload;
+  return { type: 'other', data: raw };
 }
 
 export function decodeEntry(v: ViewEntry): Entry {
   switch (v.kind) {
     case 'user': {
-      const p = dataOf(v.payload, 'user');
-      const text = typeof p.text === 'string' ? p.text : '';
-      const source = typeof p.source === 'string' ? p.source : undefined;
+      const p = armOf(v.payload, 'user', readUser);
       // The lane rides the payload (the queue-delivery divider's source).
       const lane =
         p.lane === 'force' || p.lane === 'steering' || p.lane === 'follow_up' ? p.lane : undefined;
-      const sk = p.skill;
       return {
         id: v.id,
         kind: 'user',
-        text,
-        source,
+        text: p.text,
+        source: p.source,
         lane,
-        skill: sk
-          ? { name: typeof sk.name === 'string' ? sk.name : '', location: typeof sk.location === 'string' ? sk.location : '' }
-          : undefined,
+        skill: p.skill,
         // The child → parent direction is payload-derived (source); the
         // parent → child case needs the session's parent link, so the
         // card splits that one itself.
-        msg: source ? (splitJsonPayload(text) ?? undefined) : undefined
+        msg: p.source ? (splitJsonPayload(p.text) ?? undefined) : undefined
       };
     }
     case 'assistant': {
-      const p = dataOf(v.payload, 'assistant');
-      const interrupted = p.interrupted === true;
+      const p = armOf(v.payload, 'assistant', readAssistant);
       return {
         id: v.id,
-        kind: interrupted ? 'interrupted' : 'message',
+        kind: p.interrupted ? 'interrupted' : 'message',
         // The provider's own account of how the response ended (#307). Only a
         // cut nobody asked for earns a badge; the user's stop is the kind.
         endedBy: asStreamOutcome(p.stop_reason),
-        text: typeof p.text === 'string' ? p.text : '',
-        reasoning: typeof p.reasoning === 'string' ? p.reasoning : undefined,
-        calls: Array.isArray(p.calls)
-          ? p.calls
-            .map((c) => {
-              const cid = (c as { call_id?: unknown }).call_id;
-              return typeof cid === 'string' ? cid : '';
-            })
-            .filter(Boolean)
-          : undefined,
+        text: p.text,
+        reasoning: p.reasoning,
+        calls: p.calls.map((c) => c.call_id).filter(Boolean),
         usage: p.usage
       };
     }
     case 'tool': {
-      const p = dataOf(v.payload, 'tool');
-      const a = p.args;
+      const p = armOf(v.payload, 'tool', readTool);
       return {
         id: v.id,
         kind: 'tool',
-        name: typeof p.name === 'string' ? p.name : 'tool',
+        name: p.name,
         // The provider's call id: names the tool call (one card per call,
         // upserted in place as it goes call -> result).
-        call_id: typeof p.call_id === 'string' ? p.call_id : undefined,
-        args: a && typeof a === 'object' ? (a as Record<string, unknown>) : undefined,
+        call_id: p.call_id,
+        // `args` is a JSON value (payload.rs `Value`): only an object has kv
+        // lines to render.
+        args: p.args && typeof p.args === 'object' ? (p.args as Record<string, unknown>) : undefined,
+        // `output` is the model-facing channel: plain text, or an image block
+        // (#34) the card shows as an attachment, never as a text line.
         output: typeof p.output === 'string' ? p.output : undefined,
         // GUI-only detail (#243): a wire-absent field (a tool that does not
         // split, or a pre-#243 session line) stays undefined.
@@ -156,17 +212,11 @@ export function decodeEntry(v: ViewEntry): Entry {
       };
     }
     case 'om': {
-      const o = freeform(v.payload) as {
-        active_observations?: string;
-        om_thinking?: string;
-        om_input?: string;
-        om_suggested_response?: string;
-        om_model?: string;
-      };
+      const o = freeform(v.payload);
       // The record's active_observations is the whole managed suffix; the
       // block shows what this entry added — the newest observation, past
       // its message boundary.
-      const all = o.active_observations ?? '';
+      const all = fieldOf(o, 'active_observations');
       const m = all.lastIndexOf('--- message boundary (');
       const nl = m >= 0 ? all.indexOf('\n\n', m) : -1;
       const raw = nl > 0 ? all.slice(nl + 2).trim() : all.trim();
@@ -174,20 +224,20 @@ export function decodeEntry(v: ViewEntry): Entry {
         id: v.id,
         kind: 'om',
         text: stripObservationGroup(raw),
-        thinking: o.om_thinking || undefined,
-        input: o.om_input || undefined,
-        suggestedResponse: o.om_suggested_response || undefined,
-        model: o.om_model || undefined
+        thinking: optionalOf(o, 'om_thinking') || undefined,
+        input: optionalOf(o, 'om_input') || undefined,
+        suggestedResponse: optionalOf(o, 'om_suggested_response') || undefined,
+        model: optionalOf(o, 'om_model') || undefined
       };
     }
-    case 'system': {
-      const p = dataOf(v.payload, 'system');
-      return { id: v.id, kind: 'system', text: typeof p.note === 'string' ? p.note : '' };
-    }
-    case 'spawn-snapshot': {
-      const p = dataOf(v.payload, 'spawn_snapshot');
-      return { id: v.id, kind: 'spawn-snapshot', text: typeof p.log === 'string' ? p.log : '' };
-    }
+    case 'system':
+      return { id: v.id, kind: 'system', text: armOf(v.payload, 'system', readSystem).note };
+    case 'spawn-snapshot':
+      return {
+        id: v.id,
+        kind: 'spawn-snapshot',
+        text: armOf(v.payload, 'spawn_snapshot', readSpawnSnapshot).log
+      };
     case 'subagent': {
       const p = freeform(v.payload);
       return { id: v.id, kind: 'subagent', text: JSON.stringify(p), payload: p as SubagentPayload };
@@ -300,6 +350,6 @@ export function toolStatus(name: string, output: unknown): 'running' | 'ok' | 'e
 function decodeToolStatus(p: ToolPayload): 'ok' | 'running' | 'error' | 'cancelled' {
   const s = p.status;
   if (s === 'ok' || s === 'error' || s === 'cancelled') return s;
-  return toolStatus(typeof p.name === 'string' ? p.name : '', p.output);
+  return toolStatus(p.name, p.output);
 }
 
