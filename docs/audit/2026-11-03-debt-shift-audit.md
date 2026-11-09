@@ -2189,3 +2189,47 @@ Wave-4 total: **−41 production**. Campaign through wave 4: 49,185 → **50,032
 - **File-tool anchors are content-hashed and shared across files.** An anchor taken from a grep of file
   X can be claimed by file Y and silently edit Y. Lane P lost 42 lines in `Transcript.svelte`; I lost a
   line in `tests_turns.rs`. Both recovered by `git diff` + `git checkout --`.
+
+# Wave 6 Measured Results (2026-11-08) — lanes U/V/W + lane S refined, merged
+
+Baseline for the wave: `c452c6c8` (wave 5 close). Merged: `36702a05` (lane U, subagent scope),
+`c1e7920a` (#1F refined, lazy skeleton rows), `855e1372` + `176104df` (lane V, 5C/5D),
+`b1d0f6ac` + `092be87b` + `7ca7674c` (lane W, 1I/FE2/FE4).
+
+| Rev | Item | Production LOC |
+|---|---|---|
+| `c452c6c8` | wave 5 close | 50,093 |
+| `c1e7920a` | #1F skeleton rows built lazily at the read | (in wave) |
+| `855e1372` | 5C disk-compat shape pin (test only) | 0 |
+| `176104df` | 5C/5D — `id_range.rs` owns the number domain | (in wave) |
+| `b1d0f6ac` | 1I — a state event converges the child's row | (in wave) |
+| `092be87b` | FE2 — one document per shown tab, keyed | (in wave) |
+| `36702a05` | lane U — #3G, #1K, #3H, #6J | (in wave) |
+| `7ca7674c` | FE4 — pane state seeded by the workspace | **50,314** |
+
+**Wave 6 net: +221 production. Campaign total: 49,185 → 50,314 (+1,129).**
+Gates on `7ca7674c`: Rust 1231/1231, 0 fails (fmt + clippy `-D warnings` clean); frontend eslint clean,
+`npm run build` clean, parity 56 surfaces OK, vitest 60 files / 683 tests, svelte-check 0/0.
+
+## Wave 6 closeout: three adjudications, made by me at the source
+
+- **wt-maps' #1F/#1E/#1G are all content-merged — the lane is stale, not ahead.** `git rebase main`
+  skipped #1E and #1G as *previously applied*, and `session/log.rs` on main carries `rowed` +
+  `skeleton(&mut self)`. The perf bar `ten_k_entry_session_paginates_in_bounded_time` **passes on main
+  at 0.798 s isolated**. So my wave-5/6 "load flake" story for that test is retired: the lazy-rows cure
+  landed, and the red I dismissed at load 2.0 was a real regression that #1F fixes. Lesson kept:
+  a test red in isolation at load 2.0 is not a flake — measure, then rule.
+- **H10 refuted.** #1F's rewrite deleted the `loaded` flag and all 7 guards (the module doc at
+  `session/log.rs:10` records it). `grep -c "if !self.loaded" session/log.rs` = 0. The audit's −28
+  has no target.
+- **5C/5D are on main** (`176104df` is an ancestor; `om_integration/id_range.rs` live, `ranges_overlap`
+  returns `false` only when both sides name a span). wt-idrange and wt-mirrors are content-merged
+  (heads differ from main by ancestry shape only) — swept with the nine other merged worktrees.
+
+## The queue is now exhausted of agent-decidable items
+
+Remaining, by why they are not agent work: **T7** (three image config keys parsed and never honored —
+a product decision to honor or delete), **5G** / **6C(rest)** (spec decisions), **Add6-B3** (feature-gate
+the scripted provider: 264 LOC of test seam in the production binary — a packaging decision), **H3/H4**
+(need a per-file anchor index — a feature, not a deletion), **FE1** (Svelte 6), **FE10** (refuted by
+lane G: the two menus diverge on purpose), **Skill/SkillInfo** unification (net ~0).
