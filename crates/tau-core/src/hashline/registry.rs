@@ -185,6 +185,16 @@ impl Registry {
             }
         }
 
+        // `evict_path` drops this path's entry, so the LRU stamp `touch`
+        // just took is read out FIRST and rides the new entry: the path this
+        // read just allocated is the LAST one a reclaim should pick. The
+        // four-map registry kept the stamp in a map `evict_path` also
+        // cleared, and re-took it on the `touch` below.
+        let last_used = self
+            .paths
+            .get(path)
+            .map(|entry| entry.last_used)
+            .unwrap_or(0);
         self.evict_path(path);
         for a in &new_anchors {
             self.owned.insert(
@@ -200,6 +210,7 @@ impl Registry {
                 anchors: new_anchors.clone(),
                 checksums,
                 allocated: true,
+                last_used,
                 ..PathEntry::default()
             },
         );
@@ -437,15 +448,23 @@ impl Registry {
     }
 
     fn reclaim(&mut self, protect: &str) -> Option<String> {
-        let victim = self
-            .paths
-            .iter()
-            .filter(|(path, _)| **path != protect)
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(path, _)| path.to_owned())?;
+        let victim = Self::coldest(&self.paths, protect)?;
         self.evict_path(&victim);
         self.reclaimed.push_back(victim.clone());
         Some(victim)
+    }
+
+    /// The LRU pick: the tracked path with the oldest `touch` stamp, never
+    /// `protect` — the read that needs room keeps its own anchors. `None`
+    /// when nothing else can be freed. Named so the pick is testable: the
+    /// pool cap is 7,311,616 slots, no test reaches it, and this scan was
+    /// the stamp's only consumer.
+    fn coldest(paths: &HashMap<String, PathEntry>, protect: &str) -> Option<String> {
+        paths
+            .iter()
+            .filter(|(path, _)| **path != protect)
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(path, _)| path.to_owned())
     }
 
     fn evict_path(&mut self, path: &str) {
@@ -736,6 +755,43 @@ mod tests {
             .expect("allocate");
         assert_eq!(a[0], idx_to_hash(line_base_idx("one")));
         assert_eq!(a[1], idx_to_hash(line_base_idx("two")));
+    }
+
+    #[test]
+    fn the_lru_pick_oldest_touch_wins() {
+        // Nothing pinned this pick before: a pick that ignored the stamp, a
+        // `touch` that stopped stamping, and a max-pick for a min-pick all
+        // left the suite green (audit H5's no-op proof).
+        let mut reg = Registry::new();
+        reg.allocate("cold", "one\n").expect("allocate");
+        reg.allocate("warm", "two\n").expect("allocate");
+        reg.allocate("cold", "one\n").expect("re-read re-stamps");
+        assert_eq!(
+            Registry::coldest(&reg.paths, "target"),
+            Some("warm".to_owned()),
+            "the least recently read or edited path is the victim"
+        );
+    }
+
+    #[test]
+    fn the_lru_pick_spares_the_protected_path_and_reports_none_when_empty() {
+        // The read that needs room never loses its own anchors: protecting
+        // the coldest path moves the pick to the next, never to it.
+        let mut reg = Registry::new();
+        reg.allocate("cold", "one\n").expect("allocate");
+        reg.allocate("warm", "two\n").expect("allocate");
+        reg.allocate("cold", "one\n").expect("re-read re-stamps");
+        assert_eq!(
+            Registry::coldest(&reg.paths, "warm"),
+            Some("cold".to_owned()),
+            "the protected path is never the victim"
+        );
+        // Nothing to free: the same answer for the one-path registry and for
+        // an empty one. `mint` takes its TooManyLines path from here.
+        let mut one = Registry::new();
+        one.allocate("only", "one\n").expect("allocate");
+        assert_eq!(Registry::coldest(&one.paths, "only"), None);
+        assert_eq!(Registry::coldest(&Registry::new().paths, "anything"), None);
     }
 
     #[test]
