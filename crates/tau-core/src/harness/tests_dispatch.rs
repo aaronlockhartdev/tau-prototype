@@ -316,11 +316,26 @@ async fn a_production_send_makes_exactly_one_provider_call() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let expected = n + 1;
-        let ends = collected
-            .lock()
-            .iter()
-            .filter(|e| matches!(e, Event::StreamEnd { session: s, .. } if *s == session.id))
-            .count();
+        // The pump coalesces at a 16 ms frame (pump.rs), so a settled turn's
+        // `StreamEnd` reaches the collector a beat after the turn flag
+        // clears: the count is polled, and the equality below still catches a
+        // second call (the count overshoots).
+        let ends_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let ends = loop {
+            let ends = collected
+                .lock()
+                .iter()
+                .filter(|e| matches!(e, Event::StreamEnd { session: s, .. } if *s == session.id))
+                .count();
+            if ends >= expected {
+                break ends;
+            }
+            assert!(
+                tokio::time::Instant::now() < ends_deadline,
+                "send {expected} never reached its provider call: {ends} ends observed"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
         assert_eq!(
             ends, expected,
             "send {expected} made a second provider call"

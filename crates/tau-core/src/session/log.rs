@@ -25,10 +25,13 @@ use tau_protocol::snapshot::EntryMeta;
 /// with the bytes this store wrote — the length is never a second bookkeeping
 /// line that has to be kept in step by hand.
 ///
-/// The snapshot's skeleton (#316) is built here, at the two points the log
-/// grows — `open` reads a whole file into a fresh mirror, the append path
-/// adds the line this store wrote — so its rows cannot describe a file other
-/// than the one the mirror was read from; a poll hands them out as they stand.
+/// The snapshot's skeleton (#316) is the mirror's own state: its rows cannot
+/// describe a file other than the one the mirror was read from — `open`
+/// reads a whole file into a fresh mirror, the append path adds the line
+/// this store wrote. `rowed` is the slots the rows cover: a read extends
+/// them to the mirror's length, so the rows are built once per growth — the
+/// append path pays nothing, an idle read copies nothing, a read after a
+/// growth pays the one copy that detaches from the shares (#316).
 pub(super) struct Loaded {
     at_len: i64,
     ids: HashSet<String>,
@@ -39,8 +42,10 @@ pub(super) struct Loaded {
     /// Each entry line's byte length (a snapshot's `size` field, served
     /// without re-serializing the entry).
     entry_len: Vec<usize>,
-    /// One snapshot metadata row per entry, in the same order.
+    /// One snapshot metadata row per populated slot, in the mirror's order,
+    /// `rowed` slots covered.
     rows: Arc<[EntryMeta]>,
+    rowed: usize,
     /// The log's newest assistant entry, whose usage a snapshot reports.
     last_assistant: Option<String>,
 }
@@ -55,6 +60,7 @@ impl Loaded {
             entries: Vec::new(),
             entry_len: Vec::new(),
             rows: Arc::from(Vec::new()),
+            rowed: 0,
             last_assistant: None,
         }
     }
@@ -75,10 +81,29 @@ impl Loaded {
         self.entries.len()
     }
 
-    /// The snapshot's rows and the log's newest assistant entry, as the mirror
-    /// stands: a poll of an unchanged log is handed these with no copy.
-    pub(super) fn skeleton(&self) -> (Arc<[EntryMeta]>, Option<String>) {
+    /// The snapshot's rows and the log's newest assistant entry. The rows are
+    /// extended to the mirror's length first: an unchanged log is handed the
+    /// same share, a grown one pays the one copy (#316).
+    pub(super) fn skeleton(&mut self) -> (Arc<[EntryMeta]>, Option<String>) {
+        self.extend_rows();
         (self.rows.clone(), self.last_assistant.clone())
+    }
+
+    /// Build rows for the slots the rows do not cover yet.
+    fn extend_rows(&mut self) {
+        if self.rowed >= self.entries.len() {
+            return;
+        }
+        let mut rows: Vec<EntryMeta> = self.rows.to_vec();
+        for (slot, entry) in (self.rowed..self.entries.len())
+            .filter_map(|i| self.entries[i].as_ref().map(|e| (i, e)))
+        {
+            let size =
+                u64::try_from(self.entry_len[slot]).expect("entry line, well under u64::MAX");
+            rows.push(crate::harness::entry_meta(entry, size));
+        }
+        self.rowed = self.entries.len();
+        self.rows = rows.into();
     }
     pub(super) fn holds(&self, id: &str) -> bool {
         self.ids.contains(id)
@@ -89,7 +114,7 @@ impl Loaded {
         self.entries.iter().rev().flatten().next()
     }
     /// One entry line's row: its id feeds the mint's counter, its text feeds
-    /// the id set the append guard reads, and it joins the snapshot's rows.
+    /// the id set the append guard reads.
     pub(super) fn push_entry(&mut self, entry: Entry, line_len: usize) {
         // The parse default is 0, and 0 can only lower the counter —
         // never a collision: a minted id is `{:08}` of a u64 (mint_id), so
@@ -102,12 +127,6 @@ impl Loaded {
         if entry.kind == tau_protocol::EntryKind::Assistant {
             self.last_assistant = Some(entry.id.clone());
         }
-        // The rows ride snapshots as an `Arc`, so a growth is the one copy
-        // that detaches from the shares (#316: an idle poll pays nothing).
-        let size = u64::try_from(line_len).expect("entry line, well under u64::MAX");
-        let mut rows: Vec<EntryMeta> = self.rows.to_vec();
-        rows.push(crate::harness::entry_meta(&entry, size));
-        self.rows = rows.into();
         self.entries.push(Some(entry));
         self.entry_len.push(line_len);
     }
@@ -317,10 +336,11 @@ impl SessionStore {
     }
 
     /// The store's skeleton read (#316, #1F): the mirror's rows where the
-    /// store has one, the file projected in order where it has never read it
-    /// (the file-backed read's line sizes are unknown, so they read 0).
-    pub fn skeleton(&self) -> Result<(Arc<[EntryMeta]>, Option<String>), Error> {
-        if let Some(log) = &self.log {
+    /// store has one (extended to its slots), the file projected in order
+    /// where it has never read it (the file-backed read's line sizes are
+    /// unknown, so they read 0).
+    pub fn skeleton(&mut self) -> Result<(Arc<[EntryMeta]>, Option<String>), Error> {
+        if let Some(log) = &mut self.log {
             return Ok(log.skeleton());
         }
         let mut rows: Vec<EntryMeta> = Vec::new();

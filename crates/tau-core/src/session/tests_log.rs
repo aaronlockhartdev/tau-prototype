@@ -281,7 +281,7 @@ fn an_append_takes_one_mirror_slot() {
 #[test]
 fn an_unopened_store_has_no_rows_of_its_own() {
     let dir = tempfile::tempdir().unwrap();
-    let (store, ids) = unopened_store_on_a_file(dir.path());
+    let (mut store, ids) = unopened_store_on_a_file(dir.path());
 
     assert_eq!(store.entry_count(), 0, "a cold store reported rows");
     assert_eq!(
