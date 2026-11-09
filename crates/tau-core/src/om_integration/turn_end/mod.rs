@@ -77,16 +77,18 @@ impl OmState {
         // promote itself covers counts as spent too.
         let mut running = self.record.cursor.clone();
         let mut open: Vec<usize> = Vec::new();
+        let mut spent: Vec<usize> = Vec::new();
         for (i, chunk) in chunks.iter().enumerate() {
-            if !chunk_covered(running.as_ref(), chunk) {
-                open.push(i);
-                running = Some(Cursor {
-                    entry_id: chunk.range.1.clone(),
-                    timestamp: chunk.last_ts,
-                });
+            if chunk_covered(running.as_ref(), chunk) {
+                spent.push(i);
+                continue;
             }
+            open.push(i);
+            running = Some(Cursor {
+                entry_id: chunk.range.1.clone(),
+                timestamp: chunk.last_ts,
+            });
         }
-        let spent: Vec<usize> = (0..chunks.len()).filter(|i| !open.contains(i)).collect();
         // The removal target is computed against the raw window, not the
         // stored field: a prior promote leaves chunk tokens there, and the
         // compressed chunks understate the volume the ladder must clear (#392).
